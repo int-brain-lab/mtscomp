@@ -1,4 +1,4 @@
-# mtscomp: Multichannel time series lossless compression in Python
+# Multichannel time series lossless compression in Python
 
 Lossless compression for time-dependent signals with high sampling rate (tens of thousands of Hz) and high dimensionality (hundreds or thousands of channels). Developed for large-scale ephys neuro recordings (e.g. Neuropixels).
 
@@ -34,11 +34,18 @@ Lossless compression for time-dependent signals with high sampling rate (tens of
 * Python 3.7+
 * NumPy
 
+For development only:
+
+* flake8
+* pytest
+* pytest-cov
+* coverage
+
 
 ## Command-line
 
 ```bash
-mtscomp data.bin data.cbin cdata.ch --sample-rate|-s 30000 --chunk-duration|-d 1 --compression-level|-l -1
+mtscomp data.bin data.cbin cdata.ch --sample-rate|-s 30000 --dtype|-d uint8 --chunk-duration|-d 1 --compression-level|-l -1
 mtsuncomp data.cbin data.ch data.bin
 ```
 
@@ -46,74 +53,6 @@ mtsuncomp data.cbin data.ch data.bin
 ## High-level API
 
 ```python
-def write(data, out, outmeta, sample_rate=None, chunk_duration=None, compression_level=-1):
-    """Compress a NumPy-like array (may be memmapped) into a compressed format
-    (two files, out and outmeta).
-
-    Parameters
-    ----------
-
-    data : NumPy-like array
-        An array with shape `(n_samples, n_channels)`.
-    out : str or file handle
-        Output file for the compressed data.
-    outmeta : str or file handle
-        JSON file with metadata about the compression (see doc of `compress()`).
-    sample_rate : float
-        Sampling rate, in Hz.
-    chunk_duration : float
-        Length of the chunks, in seconds.
-    compression_level : int
-        zlib compression level.
-
-    Returns
-    -------
-
-    cdata : NumPy-like array
-        Compressed version of the data, wrapped in a NumPy-like interface.
-    cmeta : dict
-        A dictionary with metadata about the compression.
-
-        version : str
-            Version number of the compression format.
-        sample_rate : float
-            Sampling rate, in Hz.
-        chunk_bounds : list of ints
-            Offsets of the chunks in time samples.
-        chunk_offsets : list of ints
-            Offsets of the chunks within the compressed raw buffer.
-
-    """
-    return cdata, {
-        'version': '1.0',
-        'compression_algorithm': 'zlib',
-        'compression_level': '-1',
-        'sample_rate': 30000.,
-        'chunk_bounds': [0, 30000, 60000, ...],
-        'chunk_offsets': [0, 1234, 5678, ...],
-    }
-
-
-def read(cdata, cmeta):
-    """Read an array from a compressed dataset (two files, cdata and cmeta), and
-    return a NumPy-like array (memmapping the compressed data on the fly).
-
-    Parameters
-    ----------
-
-    cdata : str or file handle
-        File with the compressed data (if file handle, should be open in `a` mode).
-    cmeta : dict or str (path to the metadata file) or file handle
-        A dictionary with metadata about the compression (see doc of `compress()`).
-
-    Returns
-    -------
-
-    data : NumPy-like array
-        Compressed version of the data, wrapped in a NumPy-like interface.
-
-    """
-    return data
 
 ```
 
@@ -121,45 +60,8 @@ def read(cdata, cmeta):
 ## Low-level API
 
 ```python
-class Writer:
-    def __init__(self, chunk_duration=1., compression_level=-1):
-        pass
-
-    def open(self, data_file, sample_rate=None):
-        pass
-
-    def write_chunk(self, chunk_idx, data):
-        pass
-
-    def write(self, out, outmeta):
-        pass
-
-    def close(self):
-        pass
-
-
-class Reader:
-    def open(self, cdata, cmeta):
-        pass
-
-    def open_cdata(self, cdata_file):
-        pass
-
-    def open_cmeta(self, cmeta_file):
-        pass
-
-    def read_chunk(self, chunk_idx):
-        pass
-
-    def read(self):
-        pass
-
-    def close(self):
-        pass
-
-    def __getitem__(self):
-        # Implement NumPy array slicing, return a regular in-memory NumPy array.
-        pass
-
+w = Writer(chunk_duration=1., compression_algorithm=None, compression_level=-1)
+w.open(path, sample_rate=sample_rate, n_channels=n_channels, dtype=dtype)
+w.write(out, outmeta)
+w.close()
 ```
-

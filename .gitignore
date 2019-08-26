@@ -1,0 +1,44 @@
+data
+tmp
+.cache
+.idea
+.ipynb_checkpoints
+.*fuse*
+*.orig
+*.log*
+.eggs
+.profile
+__pycache__
+.pytest_cache
+_old
+*.py[cod]
+*~
+*#
+.#*
+*!
+.coverage*
+*credentials
+tags
+
+# C extensions
+*.so
+
+# Packages
+*.egg
+*.egg-info
+build
+dist
+eggs
+parts
+bin
+var
+sdist
+develop-eggs
+lib
+lib64
+
+# Sphinx
+docs/_build
+
+.vscode
+*.code-workspace
