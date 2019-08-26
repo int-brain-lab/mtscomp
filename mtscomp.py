@@ -143,7 +143,7 @@ class Writer:
         # Compute the diff along the time axis.
         if DO_DIFF:
             chunkd = np.concatenate((chunk[0, :][np.newaxis, :], np.diff(chunk, axis=0)), axis=0)
-        else:
+        else:  # pragma: no cover
             chunkd = chunk
         # The first row is the same (we need to keep the initial values in order to reconstruct
         # the original array from the diff)0
