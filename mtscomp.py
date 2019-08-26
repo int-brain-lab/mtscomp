@@ -7,6 +7,7 @@
 # Imports
 #------------------------------------------------------------------------------
 
+import bisect
 import json
 import logging
 import os.path as op
@@ -60,6 +61,13 @@ def add_default_handler(level='INFO', logger=logger):
     handler.setFormatter(formatter)
 
     logger.addHandler(handler)
+
+
+class Bunch(dict):
+    """A subclass of dictionary with an additional dot syntax."""
+    def __init__(self, *args, **kwargs):
+        super(Bunch, self).__init__(*args, **kwargs)
+        self.__dict__ = self
 
 
 #------------------------------------------------------------------------------
@@ -116,13 +124,14 @@ class Writer:
         assert self.chunk_bounds[0] == 0
         assert self.chunk_bounds[-1] == self.n_samples
 
-    def get_meta(self):
+    def get_cmeta(self):
         return {
             'version': FORMAT_VERSION,
             'compression_algorithm': self.compression_algorithm,
             'compression_level': self.compression_level,
             'do_diff': DO_DIFF,
 
+            'dtype': str(np.dtype(self.dtype)),
             'n_channels': self.n_channels,
             'sample_rate': self.sample_rate,
             'chunk_bounds': self.chunk_bounds,
@@ -170,11 +179,12 @@ class Writer:
                 self.chunk_offsets.append(offset)
             # Final size of the file.
             csize = fb.tell()
+        assert self.chunk_offsets[-1] == csize
         ratio = 100 - 100 * csize / self.file_size
         logger.info("Wrote %s (-%.3f%%).", out, ratio)
         # Write the metadata file.
         with open(outmeta, 'w') as f:
-            json.dump(self.get_meta(), f, indent=2, sort_keys=True)
+            json.dump(self.get_cmeta(), f, indent=2, sort_keys=True)
 
     def close(self):
         """Close all file handles."""
@@ -183,26 +193,108 @@ class Writer:
 
 class Reader:
     def open(self, cdata, cmeta):
-        pass
+        # Read metadata file.
+        if not isinstance(cmeta, dict):
+            with open(cmeta, 'r') as f:
+                cmeta = json.load(f)
+        assert isinstance(cmeta, dict)
+        self.cmeta = Bunch(cmeta)
+        # Read some values from the metadata file.
+        self.n_channels = self.cmeta.n_channels
+        self.dtype = np.dtype(self.cmeta.dtype)
+        self.chunk_offsets = self.cmeta.chunk_offsets
+        self.chunk_bounds = self.cmeta.chunk_bounds
+        self.n_samples = self.chunk_bounds[-1]
+        self.n_chunks = len(self.chunk_bounds) - 1
 
-    def open_cdata(self, cdata_path):
-        pass
+        # Open data.
+        self.cdata = open(cdata, 'rb')
 
-    def open_cmeta(self, cmeta_path):
-        pass
+    def iter_chunks(self, first_chunk=0, last_chunk=None):
+        """Iterate `(chunk_idx, chunk_start, chunk_length)`."""
+        if last_chunk is None:
+            last_chunk = self.n_chunks - 1
+        for idx, (i0, i1) in enumerate(
+                zip(self.chunk_offsets[first_chunk:last_chunk + 1],
+                    self.chunk_offsets[first_chunk + 1:last_chunk + 2])):
+            yield idx, i0, i1 - i0
 
-    def read_chunk(self, chunk_idx):
-        pass
+    def read_chunk(self, chunk_idx, chunk_start, chunk_length):
+        # Load the compressed chunk from the file.
+        self.cdata.seek(chunk_start)
+        cbuffer = self.cdata.read(chunk_length)
+        assert len(cbuffer) == chunk_length
+        # Uncompress the chunk.
+        buffer = zlib.decompress(cbuffer)
+        chunk = np.frombuffer(buffer, self.dtype)
+        assert chunk.dtype == self.dtype
+        # Reshape the chunk.
+        i0, i1 = self.chunk_bounds[chunk_idx:chunk_idx + 2]
+        assert i0 <= i1
+        n_samples_chunk = i1 - i0
+        assert chunk.size == n_samples_chunk * self.n_channels
+        chunk = chunk.reshape((n_samples_chunk, self.n_channels))
+        # Perform a cumsum.
+        if self.cmeta.do_diff:
+            chunki = np.cumsum(chunk, axis=0)
+        else:
+            chunki = chunk
+        assert chunki.shape == (n_samples_chunk, self.n_channels)
+        return chunki
 
-    def read(self):
-        pass
+    def _validate_index(self, i):
+        if i is None:
+            i = 0
+        elif i < 0:
+            i += self.n_samples
+        i = np.clip(i, 0, self.n_samples)
+        assert 0 <= i <= self.n_samples
+        return i
+
+    def _chunks_for_interval(self, i0, i1):
+        i0 = self._validate_index(i0)
+        i1 = self._validate_index(i1)
+        if i0 > i1:
+            return np.zeros((0, self.n_channels), dtype=self.dtype)
+        assert i0 <= i1
+        first_chunk = max(0, bisect.bisect_left(self.chunk_bounds, i0))
+        assert first_chunk >= 0
+        last_chunk = min(
+            bisect.bisect_left(self.chunk_bounds, i1, lo=first_chunk),
+            self.n_chunks - 1)
+        assert 0 <= first_chunk <= last_chunk <= self.n_chunks - 1
+        return first_chunk, last_chunk
 
     def close(self):
-        pass
+        self.cdata.close()
 
-    def __getitem__(self):
+    def __getitem__(self, item):
         # Implement NumPy array slicing, return a regular in-memory NumPy array.
-        pass
+        if isinstance(item, slice):
+            i0 = item.start or 0
+            i1 = item.stop or self.n_samples
+            first_chunk, last_chunk = self._chunks_for_interval(i0, i1)
+            chunks = []
+            for chunk_idx, chunk_start, chunk_length in self.iter_chunks(first_chunk, last_chunk):
+                chunk = self.read_chunk(chunk_idx, chunk_start, chunk_length)
+                chunks.append(chunk)
+            if not chunks:
+                return np.zeros((0, self.n_channels), dtype=np.dtype)
+            arr = np.vstack(chunks)
+            assert arr.ndim == 2
+            assert arr.shape[1] == self.n_channels
+            assert arr.shape[0] == (
+                self.chunk_bounds[last_chunk + 1] - self.chunk_bounds[first_chunk])
+            return arr[i0 - self.chunk_bounds[first_chunk]: i1 - self.chunk_bounds[first_chunk], :]
+        elif isinstance(item, tuple):
+            if len(item) == 1:
+                return self[item[0]]
+            elif len(item) == 2:
+                return self[item[0]][:, item[1]]
+        elif isinstance(item, int):
+            return self[item:item + 1][0]
+        elif item is None:
+            raise NotImplementedError
 
 
 #------------------------------------------------------------------------------

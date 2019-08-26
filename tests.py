@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 from pytest import fixture
 
-from mtscomp import add_default_handler, Writer
+from mtscomp import add_default_handler, Writer, Reader
 
 
 #------------------------------------------------------------------------------
@@ -49,7 +49,7 @@ def path(tmp_path):
 #------------------------------------------------------------------------------
 
 def test_1(path):
-    # path = Path('data/imec_385_10s.bin')
+    # path = Path('data/imec_385_1s.bin')
     out = path.parent / 'data.cbin'
     outmeta = path.parent / 'data.ch'
 
@@ -57,3 +57,9 @@ def test_1(path):
     w.open(path, sample_rate=sample_rate, n_channels=n_channels, dtype=dtype)
     w.write(out, outmeta)
     w.close()
+
+    r = Reader()
+    r.open(out, outmeta)
+    # chunk = r.read_chunk(*next(r.iter_chunks()))
+    print(r[:].shape)
+    r.close()
