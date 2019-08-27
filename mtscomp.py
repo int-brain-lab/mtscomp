@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 
 __version__ = '0.1.0a1'
 FORMAT_VERSION = '1.0'
-DO_DIFF = True
 
 
 #------------------------------------------------------------------------------
@@ -74,7 +73,7 @@ class Bunch(dict):
 # I/O utils
 #------------------------------------------------------------------------------
 
-def load_raw_data(path=None, n_channels=None, dtype=None, offset=None):
+def load_raw_data(path=None, n_channels=None, dtype=None, offset=None, mmap=True):
     """Load raw data at a given path."""
     path = Path(path)
     assert path.exists(), "File %s does not exist." % path
@@ -85,7 +84,12 @@ def load_raw_data(path=None, n_channels=None, dtype=None, offset=None):
     n_samples = (op.getsize(str(path)) - offset) // (item_size * n_channels)
     shape = (n_samples, n_channels)
     # Memmap the file into a NumPy-like array.
-    return np.memmap(str(path), dtype=dtype, shape=shape, offset=offset)
+    if mmap:
+        return np.memmap(str(path), dtype=dtype, shape=shape, offset=offset)
+    else:
+        if offset > 0:
+            raise NotImplementedError()  # TODO
+        return np.fromfile(str(path), dtype).reshape(shape)
 
 
 #------------------------------------------------------------------------------
@@ -94,10 +98,12 @@ def load_raw_data(path=None, n_channels=None, dtype=None, offset=None):
 
 class Writer:
     """Compress a raw data file."""
-    def __init__(self, chunk_duration=1., compression_algorithm=None, compression_level=-1):
+    def __init__(self, chunk_duration=1., compression_algorithm=None, compression_level=-1,
+            do_diff=True,):
         self.chunk_duration = chunk_duration
         self.compression_algorithm = compression_algorithm or 'zlib'
         self.compression_level = compression_level
+        self.do_diff = do_diff
 
     def open(self, data_path, sample_rate=None, n_channels=None, dtype=None):
         self.sample_rate = sample_rate
@@ -129,7 +135,7 @@ class Writer:
             'version': FORMAT_VERSION,
             'compression_algorithm': self.compression_algorithm,
             'compression_level': self.compression_level,
-            'do_diff': DO_DIFF,
+            'do_diff': self.do_diff,
 
             'dtype': str(np.dtype(self.dtype)),
             'n_channels': self.n_channels,
@@ -150,8 +156,9 @@ class Writer:
         assert chunk.ndim == 2
         assert chunk.shape[1] == self.n_channels
         # Compute the diff along the time axis.
-        if DO_DIFF:
-            chunkd = np.concatenate((chunk[0, :][np.newaxis, :], np.diff(chunk, axis=0)), axis=0)
+        if self.do_diff:
+            chunkd = np.diff(chunk, axis=0)
+            chunkd = np.concatenate((chunk[0, :][np.newaxis, :], chunkd), axis=0)
         else:  # pragma: no cover
             chunkd = chunk
         # The first row is the same (we need to keep the initial values in order to reconstruct
@@ -185,6 +192,7 @@ class Writer:
         # Write the metadata file.
         with open(outmeta, 'w') as f:
             json.dump(self.get_cmeta(), f, indent=2, sort_keys=True)
+        return ratio
 
     def close(self):
         """Close all file handles."""
