@@ -7,11 +7,12 @@
 # Imports
 #------------------------------------------------------------------------------
 
+from itertools import product
 import logging
 from pathlib import Path
 
 import numpy as np
-from pytest import fixture
+from pytest import fixture, raises
 
 from mtscomp import add_default_handler, Writer, Reader, load_raw_data, compress, uncompress
 
@@ -77,6 +78,10 @@ def dtype(request):
     return np.dtype(request.param)
 
 
+#------------------------------------------------------------------------------
+# Test utils
+#------------------------------------------------------------------------------
+
 _INT16_MAX = 32766
 
 
@@ -96,6 +101,18 @@ def _to_int16(arr, M=None):
 
 def _from_int16(arr, M):
     return arr * float(M / _INT16_MAX)
+
+
+def _round_trip(path, arr, **ckwargs):
+    _write_arr(path, arr)
+    out = path.parent / 'data.cbin'
+    outmeta = path.parent / 'data.ch'
+    compress(
+        path, out, outmeta, sample_rate=sample_rate, n_channels=arr.shape[1],
+        dtype=arr.dtype, **ckwargs)
+    unc = uncompress(out, outmeta)
+    assert np.allclose(unc[:], arr)
+    return unc
 
 
 #------------------------------------------------------------------------------
@@ -158,43 +175,52 @@ def test_low(path, arr):
 
 
 def test_high(path, arr):
-    # Write the array into a raw data binary file.
-    _write_arr(path, arr)
-    out = path.parent / 'data.cbin'
-    outmeta = path.parent / 'data.ch'
-    compress(path, out, outmeta, sample_rate=sample_rate, n_channels=arr.shape[1], dtype=arr.dtype)
-    unc = uncompress(out, outmeta)[:]
-    assert np.allclose(unc[:], arr)
+    _round_trip(path, arr)
 
 
 def test_dtypes(path, dtype):
+    # Test various int dtypes.
     arr = np.array(np.random.randint(low=0, high=255, size=(1000, 100)), dtype=dtype).T
-    _write_arr(path, arr)
-    out = path.parent / 'data.cbin'
-    outmeta = path.parent / 'data.ch'
-    compress(path, out, outmeta, sample_rate=sample_rate, n_channels=arr.shape[1], dtype=arr.dtype)
-    unc = uncompress(out, outmeta)[:]
-    assert np.allclose(unc[:], arr)
+    _round_trip(path, arr)
 
 
 def test_reader_indexing(path, arr):
     # Write the array into a raw data binary file.
     M = np.abs(arr).max()
     arr16 = _to_int16(arr, M)
-    _write_arr(path, arr16)
+    unc = _round_trip(path, arr16)
+    # Index with many different items.
+    N = n_samples
 
-    out = path.parent / 'data.cbin'
-    outmeta = path.parent / 'data.ch'
-    compress(
-        path, out, outmeta, sample_rate=sample_rate, n_channels=arr16.shape[1], dtype=arr16.dtype)
-    unc = uncompress(out, outmeta)
-    slices = [
-        slice(None, None, None),
-    ]
-    for s in slices:
+    # First, degenerate slices.
+    items = [
+        slice(start, stop, step) for start, stop, step in product(
+            (None, 0, 1, -1), (None, 0, 1, -1), (None, 2, 3, N // 2, N))]
+
+    # Other slices with random numbers.
+    X = np.random.randint(low=-100, high=2 * N, size=(100, 3))
+    items.extend([slice(start, stop, step) for start, stop, step in X])
+
+    # Single integers.
+    items.extend([0, 1, N - 2, N - 1])  # N, N + 1, -1, -2])
+    items.extend(np.random.randint(low=-N, high=N, size=100).tolist())
+
+    # For every item, check the uncompression.
+    for s in items:
+        if isinstance(s, slice) and s.step is not None and s.step <= 0:
+            continue
+        # If the indexing fails, ensures the same indexing fails on the Reader.
+        try:
+            expected = arr16[s]
+        except IndexError:
+            with raises(IndexError):
+                unc[s]
+                continue
         sliced = unc[s]
-        assert np.array_equal(sliced, arr16[s])
-        assert np.allclose(_from_int16(unc[s], M), arr, atol=1e-4)
+        assert sliced.dtype == expected.dtype
+        assert sliced.shape == expected.shape
+        assert np.array_equal(sliced, expected)
+        assert np.allclose(_from_int16(sliced, M), arr[s], atol=1e-4)
 
 
 #------------------------------------------------------------------------------

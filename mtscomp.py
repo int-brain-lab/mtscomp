@@ -336,7 +336,7 @@ class Reader:
         for idx, (i0, i1) in enumerate(
                 zip(self.chunk_offsets[first_chunk:last_chunk + 1],
                     self.chunk_offsets[first_chunk + 1:last_chunk + 2])):
-            yield idx, i0, i1 - i0
+            yield first_chunk + idx, i0, i1 - i0
 
     def read_chunk(self, chunk_idx, chunk_start, chunk_length):
         """Read a compressed chunk and return a NumPy array."""
@@ -362,9 +362,9 @@ class Reader:
         assert chunki.shape == (n_samples_chunk, self.n_channels)
         return chunki
 
-    def _validate_index(self, i):
+    def _validate_index(self, i, value_for_none=0):
         if i is None:
-            i = 0
+            i = value_for_none
         elif i < 0:
             i += self.n_samples
         i = np.clip(i, 0, self.n_samples)
@@ -374,16 +374,17 @@ class Reader:
     def _chunks_for_interval(self, i0, i1):
         """Find the first and last chunks to be loaded in order to get the data between
         time samples `i0` and `i1`."""
-        i0 = self._validate_index(i0)
-        i1 = self._validate_index(i1)
-        if i0 > i1:
-            return np.zeros((0, self.n_channels), dtype=self.dtype)
         assert i0 <= i1
-        first_chunk = max(0, bisect.bisect_left(self.chunk_bounds, i0))
+
+        first_chunk = max(0, bisect.bisect_left(self.chunk_bounds, i0) - 1)
         assert first_chunk >= 0
+        assert self.chunk_bounds[first_chunk] <= i0
+
         last_chunk = min(
             bisect.bisect_left(self.chunk_bounds, i1, lo=first_chunk),
             self.n_chunks - 1)
+        assert i1 <= self.chunk_bounds[last_chunk + 1]
+
         assert 0 <= first_chunk <= last_chunk <= self.n_chunks - 1
         return first_chunk, last_chunk
 
@@ -393,16 +394,21 @@ class Reader:
 
     def __getitem__(self, item):
         """Implement NumPy array slicing, return a regular in-memory NumPy array."""
+        fallback = np.zeros((0, self.n_channels), dtype=self.dtype)
         if isinstance(item, slice):
-            i0 = item.start or 0
-            i1 = item.stop or self.n_samples
+            # Slice indexing.
+            i0 = self._validate_index(item.start, 0)
+            i1 = self._validate_index(item.stop, self.n_samples)
+            if i1 <= i0:
+                return fallback
+            assert i0 < i1
             first_chunk, last_chunk = self._chunks_for_interval(i0, i1)
             chunks = []
             for chunk_idx, chunk_start, chunk_length in self.iter_chunks(first_chunk, last_chunk):
                 chunk = self.read_chunk(chunk_idx, chunk_start, chunk_length)
                 chunks.append(chunk)
             if not chunks:
-                return np.zeros((0, self.n_channels), dtype=self.dtype)
+                return fallback
             # Concatenate all chunks.
             ns = sum(chunk.shape[0] for chunk in chunks)
             arr = np.empty((ns, self.n_channels), dtype=self.dtype)
@@ -414,18 +420,31 @@ class Reader:
             # Subselect in the chunk.
             a = i0 - self.chunk_bounds[first_chunk]
             b = i1 - self.chunk_bounds[first_chunk]
+            assert 0 <= a <= b <= arr.shape[0]
             out = arr[a:b:item.step, :]
-            assert out.shape[0] == i1 - i0
+            # Ensure the shape of the output is the expected shape from the slice length.
+            assert out.shape[0] == len(range(i0, i1, item.step or 1))
             return out
         elif isinstance(item, tuple):
+            # Multidimensional indexing.
             if len(item) == 1:
                 return self[item[0]]
             elif len(item) == 2:
                 return self[item[0]][:, item[1]]
         elif isinstance(item, int):
-            return self[item:item + 1][0]
-        elif item is None:
-            raise NotImplementedError
+            if item < 0:
+                # Deal with negative indices.
+                k = -int(np.floor(item / self.n_samples))
+                item = item + self.n_samples * k
+                assert 0 <= item < self.n_samples
+            if not 0 <= item < self.n_samples:
+                raise IndexError(
+                    "index %d is out of bounds for axis 0 with size %d" % (item, self.n_samples))
+            out = self[item:item + 1]
+            return out[0]
+        elif isinstance(item, (list, np.ndarray)):
+            raise NotImplementedError()
+        return fallback
 
     def __del__(self):
         self.close()
