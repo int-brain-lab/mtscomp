@@ -64,8 +64,22 @@ mtsuncomp data.cbin data.ch data.bin
 ## Low-level API
 
 ```python
-w = Writer(chunk_duration=1., compression_algorithm=None, compression_level=-1)
-w.open(path, sample_rate=sample_rate, n_channels=n_channels, dtype=dtype)
-w.write(out, outmeta)
+# Define a writer to compress a flat raw binary file.
+w = Writer(chunk_duration=1.)
+# Open the file to compress.
+w.open('path/to/data.bin', sample_rate=20000., n_channels=256, dtype=np.int16)
+# Compress it into a compressed binary file, and a JSON header file.
+w.write('path/to/data.cbin', 'path/to/data.ch')
 w.close()
+
+# Define a reader to uncompress a compressed array.
+r = Reader()
+# Open the compressed dataset.
+r.open('path/to/data.cbin', 'path/to/data.ch')
+# The reader can be sliced as a NumPy array: uncompression happens on the fly. Only chunks
+# that need to be loaded are loaded and uncompressed.
+# Here, we load everything in memory.
+array = r[:]
+r.close()
+
 ```

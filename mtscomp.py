@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 __version__ = '0.1.0a1'
 FORMAT_VERSION = '1.0'
 
+__all__ = ('load_raw_data', 'Writer', 'Reader', 'compress', 'uncompress')
+
+
+DEFAULT_CHUNK_DURATION = 1.
+DEFAULT_COMPRESSION_ALGORITHM = 'zlib'
+
 
 #------------------------------------------------------------------------------
 # Misc utils
@@ -78,16 +84,20 @@ def load_raw_data(path=None, n_channels=None, dtype=None, offset=None, mmap=True
     path = Path(path)
     assert path.exists(), "File %s does not exist." % path
     assert dtype, "The data type must be provided."
+    n_channels = n_channels or 1
     # Compute the array shape.
     item_size = np.dtype(dtype).itemsize
     offset = offset or 0
     n_samples = (op.getsize(str(path)) - offset) // (item_size * n_channels)
+    size = n_samples * n_channels
+    if size == 0:
+        return np.zeros((0, n_channels), dtype=dtype)
     shape = (n_samples, n_channels)
     # Memmap the file into a NumPy-like array.
     if mmap:
         return np.memmap(str(path), dtype=dtype, shape=shape, offset=offset)
     else:
-        if offset > 0:
+        if offset > 0:  # pragma: no cover
             raise NotImplementedError()  # TODO
         return np.fromfile(str(path), dtype).reshape(shape)
 
@@ -97,15 +107,53 @@ def load_raw_data(path=None, n_channels=None, dtype=None, offset=None, mmap=True
 #------------------------------------------------------------------------------
 
 class Writer:
-    """Compress a raw data file."""
-    def __init__(self, chunk_duration=1., compression_algorithm=None, compression_level=-1,
-            do_diff=True,):
+    """Handle compression of a raw data file.
+
+    Constructor
+    -----------
+
+    chunk_duration : float
+        Duration of the chunks, in seconds.
+    compression_algorithm : str
+        Name of the compression algorithm. Only `zlib` is supported at the moment.
+    compression_level : int
+        Compression level of the chosen algorithm.
+    do_diff : bool
+        Whether to compute the time-wise diff of the array before compressing.
+
+    """
+    def __init__(
+            self, chunk_duration=DEFAULT_CHUNK_DURATION, compression_algorithm=None,
+            compression_level=-1, do_diff=True):
         self.chunk_duration = chunk_duration
-        self.compression_algorithm = compression_algorithm or 'zlib'
+        self.compression_algorithm = compression_algorithm or DEFAULT_COMPRESSION_ALGORITHM
+        assert self.compression_algorithm == 'zlib', "Only zlib is currently supported."
         self.compression_level = compression_level
         self.do_diff = do_diff
 
-    def open(self, data_path, sample_rate=None, n_channels=None, dtype=None):
+    def open(
+            self, data_path, sample_rate=None, n_channels=None, dtype=None,
+            offset=None, mmap=True):
+        """Open a raw data (memmapped) from disk in order to compress it.
+
+        Parameters
+        ----------
+
+        data_path : str or Path
+            Path to the raw binary array.
+        sample_rate : float
+            Sample rate of the data.
+        n_channels : int
+            Number of columns (channels) in the data array.
+            The shape of the data is `(n_samples, n_channels)`.
+        dtype : dtype
+            NumPy data type of the data array.
+        offset : int
+            Offset, in bytes, of the data within the binary file.
+        mmap : bool
+            Whether the data should be memmapped.
+
+        """
         self.sample_rate = sample_rate
         assert sample_rate > 0
         self.dtype = dtype
@@ -118,7 +166,7 @@ class Writer:
         self._compute_chunk_bounds()
 
     def _compute_chunk_bounds(self):
-        # Compute the chunk bounds.
+        """Compute the chunk bounds, in number of time samples."""
         chunk_size = int(np.round(self.chunk_duration * self.sample_rate))
         chunk_bounds = list(range(0, self.n_samples, chunk_size))
         if chunk_bounds[-1] < self.n_samples:
@@ -129,14 +177,15 @@ class Writer:
         self.n_chunks = len(self.chunk_bounds) - 1
         assert self.chunk_bounds[0] == 0
         assert self.chunk_bounds[-1] == self.n_samples
+        logger.debug("Chunk bounds: %s", self.chunk_bounds)
 
     def get_cmeta(self):
+        """Return the metadata of the compressed file."""
         return {
             'version': FORMAT_VERSION,
             'compression_algorithm': self.compression_algorithm,
             'compression_level': self.compression_level,
             'do_diff': self.do_diff,
-
             'dtype': str(np.dtype(self.dtype)),
             'n_channels': self.n_channels,
             'sample_rate': self.sample_rate,
@@ -145,14 +194,41 @@ class Writer:
         }
 
     def get_chunk(self, chunk_idx):
+        """Return a given chunk as a NumPy array with shape `(n_samples_chk, n_channels)`.
+
+        Parameters
+        ----------
+
+        chunk_idx : int
+            Index of the chunk, from 0 to `n_chunks - 1`.
+
+        """
         assert 0 <= chunk_idx <= self.n_chunks - 1
         i0 = self.chunk_bounds[chunk_idx]
         i1 = self.chunk_bounds[chunk_idx + 1]
         return self.data[i0:i1, :]
 
     def write_chunk(self, chunk_idx, fb):
+        """Write a given chunk into the output file.
+
+        Parameters
+        ----------
+
+        chunk_idx : int
+            Index of the chunk, from 0 to `n_chunks - 1`.
+        fb : file_handle
+            File handle of the compressed binary file to be written.
+
+        Returns
+        -------
+
+        length : int
+            The number of bytes written in the compressed binary file.
+
+        """
         # Retrieve the chunk data as a 2D NumPy array.
         chunk = self.get_chunk(chunk_idx)
+        logger.debug("Chunk shape %s, dtype %s, mean %s.", chunk.shape, chunk.dtype, chunk.mean())
         assert chunk.ndim == 2
         assert chunk.shape[1] == self.n_channels
         # Compute the diff along the time axis.
@@ -174,6 +250,25 @@ class Writer:
         return length
 
     def write(self, out, outmeta):
+        """Write the compressed data in a compressed binary file, and a compression header file
+        in JSON.
+
+        Parameters
+        ----------
+
+        out : str or Path
+            Path to the compressed data binary file (typically ̀.cbin` file extension).
+        outmeta : str or Path
+            Path to the compression header JSON file (typicall `.ch` file extension).
+
+        Returns
+        -------
+
+        ratio : float
+            The ratio of the size of the compressed binary file versus the size of the
+            original binary file.
+
+        """
         # Ensure the parent directory exists.
         Path(out).parent.mkdir(exist_ok=True, parents=True)
         # Write all chunks.
@@ -187,8 +282,8 @@ class Writer:
             # Final size of the file.
             csize = fb.tell()
         assert self.chunk_offsets[-1] == csize
-        ratio = 100 - 100 * csize / self.file_size
-        logger.info("Wrote %s (-%.3f%%).", out, ratio)
+        ratio = csize / self.file_size
+        logger.info("Wrote %s (-%.3f%%).", out, 100 - 100 * ratio)
         # Write the metadata file.
         with open(outmeta, 'w') as f:
             json.dump(self.get_cmeta(), f, indent=2, sort_keys=True)
@@ -200,7 +295,19 @@ class Writer:
 
 
 class Reader:
+    """Handle decompression of a compressed data file."""
     def open(self, cdata, cmeta):
+        """Open a compressed data file.
+
+        Parameters
+        ----------
+
+        cdata : str or Path
+            Path to the compressed data file.
+        cmeta : str or Path or dict
+            Path to the compression header JSON file, or its contents as a Python dictionary.
+
+        """
         # Read metadata file.
         if not isinstance(cmeta, dict):
             with open(cmeta, 'r') as f:
@@ -219,7 +326,11 @@ class Reader:
         self.cdata = open(cdata, 'rb')
 
     def iter_chunks(self, first_chunk=0, last_chunk=None):
-        """Iterate `(chunk_idx, chunk_start, chunk_length)`."""
+        """Iterate over the compressed chunks.
+
+        Yield tuples `(chunk_idx, chunk_start, chunk_length)`.
+
+        """
         if last_chunk is None:
             last_chunk = self.n_chunks - 1
         for idx, (i0, i1) in enumerate(
@@ -228,6 +339,7 @@ class Reader:
             yield idx, i0, i1 - i0
 
     def read_chunk(self, chunk_idx, chunk_start, chunk_length):
+        """Read a compressed chunk and return a NumPy array."""
         # Load the compressed chunk from the file.
         self.cdata.seek(chunk_start)
         cbuffer = self.cdata.read(chunk_length)
@@ -260,6 +372,8 @@ class Reader:
         return i
 
     def _chunks_for_interval(self, i0, i1):
+        """Find the first and last chunks to be loaded in order to get the data between
+        time samples `i0` and `i1`."""
         i0 = self._validate_index(i0)
         i1 = self._validate_index(i1)
         if i0 > i1:
@@ -274,10 +388,11 @@ class Reader:
         return first_chunk, last_chunk
 
     def close(self):
+        """Close all file handles."""
         self.cdata.close()
 
     def __getitem__(self, item):
-        # Implement NumPy array slicing, return a regular in-memory NumPy array.
+        """Implement NumPy array slicing, return a regular in-memory NumPy array."""
         if isinstance(item, slice):
             i0 = item.start or 0
             i1 = item.stop or self.n_samples
@@ -287,13 +402,21 @@ class Reader:
                 chunk = self.read_chunk(chunk_idx, chunk_start, chunk_length)
                 chunks.append(chunk)
             if not chunks:
-                return np.zeros((0, self.n_channels), dtype=np.dtype)
-            arr = np.vstack(chunks)
+                return np.zeros((0, self.n_channels), dtype=self.dtype)
+            # Concatenate all chunks.
+            ns = sum(chunk.shape[0] for chunk in chunks)
+            arr = np.empty((ns, self.n_channels), dtype=self.dtype)
+            arr = np.concatenate(chunks, out=arr)
             assert arr.ndim == 2
             assert arr.shape[1] == self.n_channels
             assert arr.shape[0] == (
                 self.chunk_bounds[last_chunk + 1] - self.chunk_bounds[first_chunk])
-            return arr[i0 - self.chunk_bounds[first_chunk]: i1 - self.chunk_bounds[first_chunk], :]
+            # Subselect in the chunk.
+            a = i0 - self.chunk_bounds[first_chunk]
+            b = i1 - self.chunk_bounds[first_chunk]
+            out = arr[a:b:item.step, :]
+            assert out.shape[0] == i1 - i0
+            return out
         elif isinstance(item, tuple):
             if len(item) == 1:
                 return self[item[0]]
@@ -304,43 +427,51 @@ class Reader:
         elif item is None:
             raise NotImplementedError
 
+    def __del__(self):
+        self.close()
+
 
 #------------------------------------------------------------------------------
 # High-level API
 #------------------------------------------------------------------------------
 
-def write(
-        data, out, outmeta, sample_rate=None,
-        data_type=None, n_channels=None,
-        chunk_duration=None, compression_level=-1):
+def compress(
+        path, out, outmeta,
+        sample_rate=None, n_channels=None, dtype=None,
+        chunk_duration=DEFAULT_CHUNK_DURATION, compression_algorithm=None,
+        compression_level=-1, do_diff=True):
     """Compress a NumPy-like array (may be memmapped) into a compressed format
     (two files, out and outmeta).
 
     Parameters
     ----------
 
-    data : NumPy-like array
-        An array with shape `(n_samples, n_channels)`.
-    out : str or file handle
-        Output file for the compressed data.
-    outmeta : str or file handle
-        JSON file with metadata about the compression (see doc of `compress()`).
+    path : str or Path
+        Path to a raw data binary file.
+    out : str or Path
+        Path the to compressed data file.
+    outmeta : str or Path
+        Path to the compression header JSON file.
     sample_rate : float
         Sampling rate, in Hz.
-    data_type : dtype
+    dtype : dtype
         The data type of the array in the raw data file.
     n_channels : int
         Number of channels in the file.
     chunk_duration : float
-        Length of the chunks, in seconds.
+        Duration of the chunks, in seconds.
+    compression_algorithm : str
+        Name of the compression algorithm. Only `zlib` is supported at the moment.
     compression_level : int
-        zlib compression level.
+        Compression level of the chosen algorithm.
+    do_diff : bool
+        Whether to compute the time-wise diff of the array before compressing.
 
     Returns
     -------
 
-    cdata : NumPy-like array
-        Compressed version of the data, wrapped in a NumPy-like interface.
+    length : int
+        Number of bytes written.
 
     Metadata dictionary
     -------------------
@@ -350,7 +481,7 @@ def write(
     version : str
         Version number of the compression format.
     compression_algorithm : str
-        Name of the compression algorithm.
+        Name of the compression algorithm. Only `zlib` is supported at the moment.
     compression_level : str
         Compression level to be passed to the compression function.
     n_channels : int
@@ -364,23 +495,38 @@ def write(
 
     """
 
+    w = Writer(
+        chunk_duration=chunk_duration, compression_algorithm=compression_algorithm,
+        compression_level=compression_level, do_diff=do_diff)
+    w.open(path, sample_rate=sample_rate, n_channels=n_channels, dtype=dtype)
+    length = w.write(out, outmeta)
+    w.close()
+    return length
 
-def read(cdata, cmeta):
+
+def uncompress(cdata, cmeta):
     """Read an array from a compressed dataset (two files, cdata and cmeta), and
-    return a NumPy-like array (memmapping the compressed data on the fly).
+    return a NumPy-like array (memmapping the compressed data file, and uncompressing on the fly).
+
+    Note: the reader should be closed after use.
 
     Parameters
     ----------
 
-    cdata : str or file handle
-        File with the compressed data (if file handle, should be open in `a` mode).
-    cmeta : dict or str (path to the metadata file) or file handle
-        A dictionary with metadata about the compression (see doc of `compress()`).
+    cdata : str or Path
+        Path to the compressed data file.
+    cmeta : str or Path
+        Path to the compression header JSON file.
 
     Returns
     -------
 
-    data : NumPy-like array
-        Compressed version of the data, wrapped in a NumPy-like interface.
+    reader : Reader instance
+        This object implements the NumPy slicing syntax to access
+        parts of the actual data as NumPy arrays.
 
     """
+
+    r = Reader()
+    r.open(cdata, cmeta)
+    return r
