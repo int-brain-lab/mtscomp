@@ -450,6 +450,7 @@ class Reader:
         if CHECK_AFTER_DECOMPRESS:
             decompressed = load_raw_data(out, n_channels=self.n_channels, dtype=self.dtype)
             check(decompressed, self.cdata, self.cmeta)
+            logger.debug("Automatic integrity check after decompression PASSED.")
 
     def close(self):
         """Close all file handles."""
