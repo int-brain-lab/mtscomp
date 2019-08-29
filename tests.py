@@ -15,7 +15,9 @@ from pathlib import Path
 import numpy as np
 from pytest import fixture, raises, mark
 
-from mtscomp import add_default_handler, Writer, Reader, load_raw_data, compress, uncompress
+from mtscomp import (
+    add_default_handler, Writer, Reader, load_raw_data, compress, uncompress,
+    mtscomp, mtsuncomp)
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +168,8 @@ def test_low(path, arr):
     # Compress the file.
     w = Writer()
     w.open(path, sample_rate=sample_rate, n_channels=arr.shape[1], dtype=arr.dtype)
-    w.write(out, outmeta)
+    # Note: out and outmeta should be set by default to the values specified above.
+    w.write(None, None)
     w.close()
 
     # Load the compressed file.
@@ -286,3 +289,17 @@ def test_n_channels(path, ns, nc):
 @mark.parametrize('compression_level', [1, 3, 6, 9])
 def test_compression_levels_do_diff(path, arr, compression_level, do_diff):
     _round_trip(path, arr, compression_level=compression_level, do_diff=do_diff)
+
+
+#------------------------------------------------------------------------------
+# CLI tests
+#------------------------------------------------------------------------------
+
+def test_mtscomp_1(path, arr):
+    _write_arr(path, arr)
+    out = path.parent / 'data.cbin'
+    outmeta = path.parent / 'data.ch'
+
+    mtscomp([str(path), '-d', str(arr.dtype), '-s', str(sample_rate), '-n', str(arr.shape[1])])
+
+    mtsuncomp([str(out), str(outmeta)])

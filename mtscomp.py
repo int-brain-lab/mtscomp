@@ -7,12 +7,14 @@
 # Imports
 #------------------------------------------------------------------------------
 
+import argparse
 import bisect
 from functools import lru_cache
 import json
 import logging
 import os.path as op
 from pathlib import Path
+import sys
 import zlib
 
 import numpy as np
@@ -166,6 +168,7 @@ class Writer:
         assert sample_rate > 0
         assert n_channels > 0
         self.dtype = dtype
+        self.data_path = Path(data_path)
         self.data = load_raw_data(data_path, n_channels=n_channels, dtype=dtype)
         self.file_size = self.data.size * self.data.itemsize
         assert self.data.ndim == 2
@@ -239,7 +242,6 @@ class Writer:
         """
         # Retrieve the chunk data as a 2D NumPy array.
         chunk = self.get_chunk(chunk_idx)
-        # logger.debug("Chunk shape %s, dtype %s, mean %s.", chunk.shape, chunk.dtype, chunk.mean())
         assert chunk.ndim == 2
         assert chunk.shape[1] == self.n_channels
         # Compute the diff along the time axis.
@@ -280,6 +282,11 @@ class Writer:
             original binary file.
 
         """
+        # Default file extension for output files.
+        if not out:
+            out = self.data_path.with_suffix('.c' + self.data_path.suffix[1:])
+        if not outmeta:
+            outmeta = self.data_path.with_suffix('.ch')
         # Ensure the parent directory exists.
         Path(out).parent.mkdir(exist_ok=True, parents=True)
         # Write all chunks.
@@ -515,7 +522,7 @@ def check(data, out, outmeta):
 
 
 def compress(
-        path, out, outmeta,
+        path, out=None, outmeta=None,
         sample_rate=None, n_channels=None, dtype=None,
         chunk_duration=DEFAULT_CHUNK_DURATION, compression_algorithm=None,
         compression_level=-1, do_diff=True):
@@ -609,3 +616,61 @@ def uncompress(cdata, cmeta):
     r = Reader()
     r.open(cdata, cmeta)
     return r
+
+
+#------------------------------------------------------------------------------
+# Command-line API
+#------------------------------------------------------------------------------
+
+def mtscomp_parse_args(args):
+    """Command-line interface to compress a file."""
+    parser = argparse.ArgumentParser(description='Compress a raw binary file.')
+
+    parser.add_argument(
+        'path', type=str, help='input path to a raw binary file')
+
+    parser.add_argument(
+        'out', type=str, nargs='?',
+        help='output path to the compressed binary file')
+
+    parser.add_argument(
+        'outmeta', type=str, nargs='?',
+        help='output path to the compression metadata file')
+
+    parser.add_argument('-d', type=str, help='data type')
+    parser.add_argument('-s', type=float, help='sample rate')
+    parser.add_argument('-n', type=int, help='number of channels')
+
+    return parser.parse_args(args)
+
+
+def mtscomp(args=None):
+    parser = mtscomp_parse_args(args or sys.argv[1:])
+    compress(
+        parser.path, parser.out, parser.outmeta,
+        sample_rate=parser.s, n_channels=parser.n, dtype=np.dtype(parser.d))
+
+
+def mtsuncomp_parse_args(args):
+    """Command-line interface to uncompress a file."""
+    parser = argparse.ArgumentParser(description='Uncompress a raw binary file.')
+
+    parser.add_argument(
+        'cdata', type=str,
+        help='path to the compressed binary file')
+
+    parser.add_argument(
+        'cmeta', type=str,
+        help='path to the compression metadata file')
+
+    parser.add_argument('-d', type=str, help='data type')
+    parser.add_argument('-s', type=float, help='sample rate')
+    parser.add_argument('-n', type=int, help='number of channels')
+
+    return parser.parse_args(args)
+
+
+def mtsuncomp(args=None):
+    parser = mtsuncomp_parse_args(args or sys.argv[1:])
+    uncompress(parser.cdata, parser.cmeta)
+    # TODO: write to an output file
