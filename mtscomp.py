@@ -8,6 +8,7 @@
 #------------------------------------------------------------------------------
 
 import bisect
+from functools import lru_cache
 import json
 import logging
 import os.path as op
@@ -31,6 +32,7 @@ __all__ = ('load_raw_data', 'Writer', 'Reader', 'compress', 'uncompress')
 
 DEFAULT_CHUNK_DURATION = 1.
 DEFAULT_COMPRESSION_ALGORITHM = 'zlib'
+DEFAULT_CACHE_SIZE = 10  # number of chunks to keep in memory while reading the data
 CHECK_AFTER_WRITE = True  # after compression, read the file and check it matches the original data
 CRITICAL_ERROR_URL = \
     "https://github.com/int-brain-lab/mtscomp/issues/new?title=Critical+error"
@@ -315,7 +317,21 @@ class Writer:
 
 
 class Reader:
-    """Handle decompression of a compressed data file."""
+    """Handle decompression of a compressed data file.
+
+    Constructor
+    -----------
+
+    cache_size : int
+        Maximum number of chunks to keep in memory while reading. Every chunk kept in cache
+        may take a few dozens of MB in RAM.
+
+    """
+    def __init__(self, cache_size=DEFAULT_CACHE_SIZE):
+        self.cache_size = cache_size or 0
+        if self.cache_size > 0:
+            self.read_chunk = lru_cache(maxsize=self.cache_size)(self.read_chunk)
+
     def open(self, cdata, cmeta):
         """Open a compressed data file.
 
