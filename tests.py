@@ -9,6 +9,7 @@
 
 from itertools import product
 import logging
+import os
 from pathlib import Path
 
 import numpy as np
@@ -231,6 +232,34 @@ def test_reader_indexing(path, arr):
         assert sliced.shape == expected.shape
         assert np.array_equal(sliced, expected)
         assert np.allclose(_from_int16(sliced, M), arr[s], atol=1e-4)
+
+
+def test_check_fail(path, arr):
+    """Check that compression fails if we change one byte in the original file before finishing
+    the write() method."""
+    out = path.parent / 'data.cbin'
+    outmeta = path.parent / 'data.ch'
+
+    # Write the array into a raw data binary file.
+    _write_arr(path, arr)
+
+    def before_check(writer):
+        # Change one byte in the original file.
+        # First, we need to close the original memmapped file before we can write to it.
+        writer.close()
+        # Then, we change one byte in it.
+        with open(str(path), 'wb') as f:
+            f.seek(np.random.randint(0, out.stat().st_size))
+            f.write(os.urandom(1))
+        # Finally, we open it again before the check.
+        w.open(path, sample_rate=sample_rate, n_channels=arr.shape[1], dtype=arr.dtype)
+
+    # Compress the file.
+    with raises(RuntimeError):
+        w = Writer(before_check=before_check)
+        w.open(path, sample_rate=sample_rate, n_channels=arr.shape[1], dtype=arr.dtype)
+        w.write(out, outmeta)
+        w.close()
 
 
 #------------------------------------------------------------------------------

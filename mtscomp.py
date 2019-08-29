@@ -31,6 +31,9 @@ __all__ = ('load_raw_data', 'Writer', 'Reader', 'compress', 'uncompress')
 
 DEFAULT_CHUNK_DURATION = 1.
 DEFAULT_COMPRESSION_ALGORITHM = 'zlib'
+CHECK_AFTER_WRITE = True  # after compression, read the file and check it matches the original data
+CRITICAL_ERROR_URL = \
+    "https://github.com/int-brain-lab/mtscomp/issues/new?title=Critical+error"
 
 
 #------------------------------------------------------------------------------
@@ -120,16 +123,19 @@ class Writer:
         Compression level of the chosen algorithm.
     do_diff : bool
         Whether to compute the time-wise diff of the array before compressing.
+    before_check : function
+        A callback method that could be called just before the integrity check.
 
     """
     def __init__(
             self, chunk_duration=DEFAULT_CHUNK_DURATION, compression_algorithm=None,
-            compression_level=-1, do_diff=True):
+            compression_level=-1, do_diff=True, before_check=None):
         self.chunk_duration = chunk_duration
         self.compression_algorithm = compression_algorithm or DEFAULT_COMPRESSION_ALGORITHM
         assert self.compression_algorithm == 'zlib', "Only zlib is currently supported."
         self.compression_level = compression_level
         self.do_diff = do_diff
+        self.before_check = before_check or (lambda x: None)
 
     def open(
             self, data_path, sample_rate=None, n_channels=None, dtype=None,
@@ -231,7 +237,7 @@ class Writer:
         """
         # Retrieve the chunk data as a 2D NumPy array.
         chunk = self.get_chunk(chunk_idx)
-        logger.debug("Chunk shape %s, dtype %s, mean %s.", chunk.shape, chunk.dtype, chunk.mean())
+        # logger.debug("Chunk shape %s, dtype %s, mean %s.", chunk.shape, chunk.dtype, chunk.mean())
         assert chunk.ndim == 2
         assert chunk.shape[1] == self.n_channels
         # Compute the diff along the time axis.
@@ -290,6 +296,17 @@ class Writer:
         # Write the metadata file.
         with open(outmeta, 'w') as f:
             json.dump(self.get_cmeta(), f, indent=2, sort_keys=True)
+        # Check that the written file matches the original file (once uncompressed).
+        if CHECK_AFTER_WRITE:
+            # Callback function before checking.
+            self.before_check(self)
+            try:
+                check(self.data, out, outmeta)
+            except AssertionError:
+                raise RuntimeError(
+                    "CRITICAL ERROR: automatic check failed when compressing the data. "
+                    "Report immediately to " + CRITICAL_ERROR_URL)
+            logger.debug("Automatic integrity check after compression PASSED.")
         return ratio
 
     def close(self):
@@ -324,6 +341,8 @@ class Reader:
         self.chunk_bounds = self.cmeta.chunk_bounds
         self.n_samples = self.chunk_bounds[-1]
         self.n_chunks = len(self.chunk_bounds) - 1
+        self.shape = (self.n_samples, self.n_channels)
+        self.ndim = 2
 
         # Open data.
         self.cdata = open(cdata, 'rb')
@@ -358,7 +377,8 @@ class Reader:
         chunk = chunk.reshape((n_samples_chunk, self.n_channels))
         # Perform a cumsum.
         if self.cmeta.do_diff:
-            chunki = np.cumsum(chunk, axis=0)
+            chunki = np.empty_like(chunk)
+            np.cumsum(chunk, axis=0, out=chunki)
         else:
             chunki = chunk
         assert chunki.shape == (n_samples_chunk, self.n_channels)
@@ -455,6 +475,27 @@ class Reader:
 #------------------------------------------------------------------------------
 # High-level API
 #------------------------------------------------------------------------------
+
+def check(data, out, outmeta):
+    """Check that the compressed data matches the original array byte per byte."""
+    unc = uncompress(out, outmeta)
+    # Read all chunks.
+    for chunk_idx, chunk_start, chunk_length in unc.iter_chunks():
+        chunk = unc.read_chunk(chunk_idx, chunk_start, chunk_length)
+        # Find the corresponding chunk from the original data array.
+        i0, i1 = unc.chunk_bounds[chunk_idx], unc.chunk_bounds[chunk_idx + 1]
+        expected = data[i0:i1]
+        # Check the dtype and shape match.
+        assert chunk.dtype == expected.dtype
+        assert chunk.shape == expected.shape
+        if np.issubdtype(chunk.dtype, np.integer):
+            # For integer dtypes, check that the array are exactly equal.
+            assert np.array_equal(chunk, expected)
+        else:
+            # For floating point dtypes, check that the array are almost equal
+            # (diff followed by cumsum does not yield exactly the same floating point numbers).
+            assert np.allclose(chunk, expected, atol=1e-16)
+
 
 def compress(
         path, out, outmeta,
