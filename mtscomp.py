@@ -329,8 +329,6 @@ class Reader:
     """
     def __init__(self, cache_size=DEFAULT_CACHE_SIZE):
         self.cache_size = cache_size or 0
-        if self.cache_size > 0:
-            self.read_chunk = lru_cache(maxsize=self.cache_size)(self.read_chunk)
 
     def open(self, cdata, cmeta):
         """Open a compressed data file.
@@ -362,6 +360,9 @@ class Reader:
 
         # Open data.
         self.cdata = open(cdata, 'rb')
+
+        if self.cache_size > 0:
+            self.read_chunk = lru_cache(maxsize=self.cache_size)(self.read_chunk)
 
     def iter_chunks(self, first_chunk=0, last_chunk=None):
         """Iterate over the compressed chunks.
