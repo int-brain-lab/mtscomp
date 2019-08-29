@@ -53,7 +53,11 @@ setup(
         'mtscomp': [],
     },
     entry_points={
-        'console_scripts': [],
+        'console_scripts': [
+            'mtscomp=mtscomp:mtscomp',
+            'mtsdecomp=mtscomp:mtsdecomp',
+            'mtsdesc=mtscomp:mtsdesc',
+        ],
     },
     include_package_data=True,
     keywords='',

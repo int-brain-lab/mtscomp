@@ -7,17 +7,20 @@
 # Imports
 #------------------------------------------------------------------------------
 
+from contextlib import redirect_stdout
+import io
 from itertools import product
 import logging
 import os
 from pathlib import Path
+import re
 
 import numpy as np
 from pytest import fixture, raises, mark
 
 from mtscomp import (
-    add_default_handler, Writer, Reader, load_raw_data, compress, uncompress,
-    mtscomp, mtsuncomp)
+    add_default_handler, Writer, Reader, load_raw_data, compress, decompress,
+    mtsdesc, mtscomp, mtsdecomp)
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +120,7 @@ def _round_trip(path, arr, **ckwargs):
     compress(
         path, out, outmeta, sample_rate=sample_rate, n_channels=arr.shape[1],
         dtype=arr.dtype, **ckwargs)
-    unc = uncompress(out, outmeta)
+    unc = decompress(out, outmeta)
     assert np.allclose(unc[:], arr)
     return unc
 
@@ -175,11 +178,11 @@ def test_low(path, arr):
     # Load the compressed file.
     r = Reader()
     r.open(out, outmeta)
-    uncomp = r[:]
+    decomp = r[:]
     r.close()
 
     # Ensure the array are equal.
-    assert np.allclose(arr, uncomp)
+    assert np.allclose(arr, decomp)
 
 
 def test_high(path, arr):
@@ -219,7 +222,7 @@ def test_reader_indexing(path, arr):
     items.extend([0, 1, N - 2, N - 1])  # N, N + 1, -1, -2])
     items.extend(np.random.randint(low=-N, high=N, size=100).tolist())
 
-    # For every item, check the uncompression.
+    # For every item, check the decompression.
     for s in items:
         if isinstance(s, slice) and s.step is not None and s.step <= 0:
             continue
@@ -265,6 +268,26 @@ def test_check_fail(path, arr):
         w.close()
 
 
+def test_comp_decomp(path):
+    """Compress and decompress a random binary file with integer data type, and check the files
+    are byte to byte equal. This would not work for floating-point data types."""
+    arr = np.array(np.random.randint(low=0, high=255, size=(1000, 1000)), dtype=np.int16).T
+    _write_arr(path, arr)
+    out = path.parent / 'data.cbin'
+    outmeta = path.parent / 'data.ch'
+    compress(
+        path, out, outmeta, sample_rate=sample_rate, n_channels=arr.shape[1], dtype=arr.dtype)
+    decompressed_path = path.with_suffix('.decomp.bin')
+    decompress(out, outmeta, decompressed_path)
+
+    # Check the files are equal.
+    with open(str(path), 'rb') as f:
+        buf1 = f.read()
+    with open(str(decompressed_path), 'rb') as f:
+        buf2 = f.read()
+    assert buf1 == buf2
+
+
 #------------------------------------------------------------------------------
 # Read/write tests with different parameters
 #------------------------------------------------------------------------------
@@ -295,11 +318,28 @@ def test_compression_levels_do_diff(path, arr, compression_level, do_diff):
 # CLI tests
 #------------------------------------------------------------------------------
 
-def test_mtscomp_1(path, arr):
+def test_cli_1(path, arr):
     _write_arr(path, arr)
     out = path.parent / 'data.cbin'
     outmeta = path.parent / 'data.ch'
+    path2 = path.parent / 'data2.bin'
 
+    # Compress.
     mtscomp([str(path), '-d', str(arr.dtype), '-s', str(sample_rate), '-n', str(arr.shape[1])])
 
-    mtsuncomp([str(out), str(outmeta)])
+    # Capture the compressed dataset description.
+    f = io.StringIO()
+    with redirect_stdout(f):
+        mtsdesc([str(out), str(outmeta)])
+    desc = f.getvalue()
+    dt = np.dtype(re.search(r'dtype[ ]+(\S+)', desc).group(1))
+    nc = int(re.search(r'n_channels[ ]+([0-9]+)', desc).group(1))
+
+    # Decompress.
+    mtsdecomp([str(out), str(outmeta), str(path2)])
+
+    # Extract n_channels and dtype from the description.
+    decompressed = load_raw_data(path=path2, n_channels=nc, dtype=dt)
+
+    # Check that the decompressed and original arrays match.
+    np.allclose(decompressed, arr)

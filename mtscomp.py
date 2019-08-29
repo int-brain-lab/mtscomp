@@ -27,17 +27,19 @@ logger = logging.getLogger(__name__)
 #------------------------------------------------------------------------------
 
 __version__ = '0.1.0a1'
-FORMAT_VERSION = '1.0'
+FORMAT_VERSION = '0.0'  # development
 
-__all__ = ('load_raw_data', 'Writer', 'Reader', 'compress', 'uncompress')
+__all__ = ('load_raw_data', 'Writer', 'Reader', 'compress', 'decompress')
 
 
 DEFAULT_CHUNK_DURATION = 1.
 DEFAULT_COMPRESSION_ALGORITHM = 'zlib'
 DEFAULT_CACHE_SIZE = 10  # number of chunks to keep in memory while reading the data
-CHECK_AFTER_WRITE = True  # after compression, read the file and check it matches the original data
+CHECK_AFTER_COMPRESS = True  # check the integrity of the compressed file
 CRITICAL_ERROR_URL = \
     "https://github.com/int-brain-lab/mtscomp/issues/new?title=Critical+error"
+
+CHECK_AFTER_DECOMPRESS = True  # check the integrity of the decompressed file saved to disk
 
 
 #------------------------------------------------------------------------------
@@ -305,8 +307,8 @@ class Writer:
         # Write the metadata file.
         with open(outmeta, 'w') as f:
             json.dump(self.get_cmeta(), f, indent=2, sort_keys=True)
-        # Check that the written file matches the original file (once uncompressed).
-        if CHECK_AFTER_WRITE:
+        # Check that the written file matches the original file (once decompressed).
+        if CHECK_AFTER_COMPRESS:
             # Callback function before checking.
             self.before_check(self)
             try:
@@ -366,7 +368,9 @@ class Reader:
         self.ndim = 2
 
         # Open data.
-        self.cdata = open(cdata, 'rb')
+        if isinstance(cdata, (str, Path)):
+            cdata = open(cdata, 'rb')
+        self.cdata = cdata
 
         if self.cache_size > 0:
             self.read_chunk = lru_cache(maxsize=self.cache_size)(self.read_chunk)
@@ -389,7 +393,7 @@ class Reader:
         self.cdata.seek(chunk_start)
         cbuffer = self.cdata.read(chunk_length)
         assert len(cbuffer) == chunk_length
-        # Uncompress the chunk.
+        # Decompress the chunk.
         buffer = zlib.decompress(cbuffer)
         chunk = np.frombuffer(buffer, self.dtype)
         assert chunk.dtype == self.dtype
@@ -433,6 +437,19 @@ class Reader:
 
         assert 0 <= first_chunk <= last_chunk <= self.n_chunks - 1
         return first_chunk, last_chunk
+
+    def tofile(self, out):
+        """Write the decompressed array to disk."""
+        out = Path(out)
+        if out.exists():  # pragma: no cover
+            raise ValueError("The output file %s already exists." % out)
+        # Read all chunks and save them to disk.
+        with open(out, 'wb') as fb:
+            for chunk_idx, chunk_start, chunk_length in self.iter_chunks():
+                self.read_chunk(chunk_idx, chunk_start, chunk_length).tofile(fb)
+        if CHECK_AFTER_DECOMPRESS:
+            decompressed = load_raw_data(out, n_channels=self.n_channels, dtype=self.dtype)
+            check(decompressed, self.cdata, self.cmeta)
 
     def close(self):
         """Close all file handles."""
@@ -502,7 +519,7 @@ class Reader:
 
 def check(data, out, outmeta):
     """Check that the compressed data matches the original array byte per byte."""
-    unc = uncompress(out, outmeta)
+    unc = decompress(out, outmeta)
     # Read all chunks.
     for chunk_idx, chunk_start, chunk_length in unc.iter_chunks():
         chunk = unc.read_chunk(chunk_idx, chunk_start, chunk_length)
@@ -590,9 +607,9 @@ def compress(
     return length
 
 
-def uncompress(cdata, cmeta):
+def decompress(cdata, cmeta, out=None):
     """Read an array from a compressed dataset (two files, cdata and cmeta), and
-    return a NumPy-like array (memmapping the compressed data file, and uncompressing on the fly).
+    return a NumPy-like array (memmapping the compressed data file, and decompressing on the fly).
 
     Note: the reader should be closed after use.
 
@@ -603,6 +620,8 @@ def uncompress(cdata, cmeta):
         Path to the compressed data file.
     cmeta : str or Path
         Path to the compression header JSON file.
+    out : str or Path
+        Path to the decompressed file to be written.
 
     Returns
     -------
@@ -615,11 +634,13 @@ def uncompress(cdata, cmeta):
 
     r = Reader()
     r.open(cdata, cmeta)
+    if out:
+        r.tofile(out)
     return r
 
 
 #------------------------------------------------------------------------------
-# Command-line API
+# Command-line API: mtscomp
 #------------------------------------------------------------------------------
 
 def mtscomp_parse_args(args):
@@ -627,15 +648,15 @@ def mtscomp_parse_args(args):
     parser = argparse.ArgumentParser(description='Compress a raw binary file.')
 
     parser.add_argument(
-        'path', type=str, help='input path to a raw binary file')
+        'path', type=str, help='input path of a raw binary file')
 
     parser.add_argument(
         'out', type=str, nargs='?',
-        help='output path to the compressed binary file')
+        help='output path of the compressed binary file')
 
     parser.add_argument(
         'outmeta', type=str, nargs='?',
-        help='output path to the compression metadata file')
+        help='output path of the compression metadata file')
 
     parser.add_argument('-d', type=str, help='data type')
     parser.add_argument('-s', type=float, help='sample rate')
@@ -645,15 +666,20 @@ def mtscomp_parse_args(args):
 
 
 def mtscomp(args=None):
+    """Compress a file."""
     parser = mtscomp_parse_args(args or sys.argv[1:])
     compress(
         parser.path, parser.out, parser.outmeta,
         sample_rate=parser.s, n_channels=parser.n, dtype=np.dtype(parser.d))
 
 
-def mtsuncomp_parse_args(args):
-    """Command-line interface to uncompress a file."""
-    parser = argparse.ArgumentParser(description='Uncompress a raw binary file.')
+#------------------------------------------------------------------------------
+# Command-line API: mtsdecomp
+#------------------------------------------------------------------------------
+
+def mtsdecomp_parse_args(args):
+    """Command-line interface to decompress a file."""
+    parser = argparse.ArgumentParser(description='Decompress a raw binary file.')
 
     parser.add_argument(
         'cdata', type=str,
@@ -663,6 +689,10 @@ def mtsuncomp_parse_args(args):
         'cmeta', type=str,
         help='path to the compression metadata file')
 
+    parser.add_argument(
+        'out', type=str, nargs='?',
+        help='path to the decompressed file')
+
     parser.add_argument('-d', type=str, help='data type')
     parser.add_argument('-s', type=float, help='sample rate')
     parser.add_argument('-n', type=int, help='number of channels')
@@ -670,7 +700,30 @@ def mtsuncomp_parse_args(args):
     return parser.parse_args(args)
 
 
-def mtsuncomp(args=None):
-    parser = mtsuncomp_parse_args(args or sys.argv[1:])
-    uncompress(parser.cdata, parser.cmeta)
-    # TODO: write to an output file
+def mtsdecomp(args=None):
+    """Decompress a file."""
+    parser = mtsdecomp_parse_args(args or sys.argv[1:])
+    decompress(parser.cdata, parser.cmeta, parser.out)
+
+
+#------------------------------------------------------------------------------
+# Command-line API: mtsdesc
+#------------------------------------------------------------------------------
+
+def mtsdesc(args=None):
+    """Describe a compressed file."""
+    parser = mtsdecomp_parse_args(args or sys.argv[1:])
+    r = Reader()
+    r.open(parser.cdata, parser.cmeta)
+    sr = float(r.cmeta.sample_rate)
+    info = dict(
+        dtype=r.dtype,
+        sample_rate=sr,
+        n_channels=r.n_channels,
+        duration='%.1fs' % (r.n_samples / sr),
+        n_samples=r.n_samples,
+        chunk_duration='%.1fs' % (np.diff(r.chunk_bounds).mean() / sr),
+        n_chunks=r.n_chunks,
+    )
+    for k, v in info.items():
+        print('{:<15}'.format(k), str(v))
