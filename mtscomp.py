@@ -156,11 +156,14 @@ class Writer:
         """
         self.sample_rate = sample_rate
         assert sample_rate > 0
+        assert n_channels > 0
         self.dtype = dtype
         self.data = load_raw_data(data_path, n_channels=n_channels, dtype=dtype)
         self.file_size = self.data.size * self.data.itemsize
         assert self.data.ndim == 2
         self.n_samples, self.n_channels = self.data.shape
+        assert self.n_samples > 0
+        assert self.n_channels > 0
         assert n_channels == self.n_channels
         logger.debug("Open %s with size %s.", data_path, self.data.shape)
         self._compute_chunk_bounds()
@@ -331,8 +334,7 @@ class Reader:
         Yield tuples `(chunk_idx, chunk_start, chunk_length)`.
 
         """
-        if last_chunk is None:
-            last_chunk = self.n_chunks - 1
+        last_chunk = last_chunk if last_chunk is not None else self.n_chunks - 1
         for idx, (i0, i1) in enumerate(
                 zip(self.chunk_offsets[first_chunk:last_chunk + 1],
                     self.chunk_offsets[first_chunk + 1:last_chunk + 2])):
@@ -407,7 +409,7 @@ class Reader:
             for chunk_idx, chunk_start, chunk_length in self.iter_chunks(first_chunk, last_chunk):
                 chunk = self.read_chunk(chunk_idx, chunk_start, chunk_length)
                 chunks.append(chunk)
-            if not chunks:
+            if not chunks:  # pragma: no cover
                 return fallback
             # Concatenate all chunks.
             ns = sum(chunk.shape[0] for chunk in chunks)
@@ -437,14 +439,14 @@ class Reader:
                 k = -int(np.floor(item / self.n_samples))
                 item = item + self.n_samples * k
                 assert 0 <= item < self.n_samples
-            if not 0 <= item < self.n_samples:
+            if not 0 <= item < self.n_samples:  # pragma: no cover
                 raise IndexError(
                     "index %d is out of bounds for axis 0 with size %d" % (item, self.n_samples))
             out = self[item:item + 1]
             return out[0]
-        elif isinstance(item, (list, np.ndarray)):
-            raise NotImplementedError()
-        return fallback
+        elif isinstance(item, (list, np.ndarray)):  # pragma: no cover
+            raise NotImplementedError("Indexing with multiple values is currently unsupported.")
+        return fallback  # pragma: no cover
 
     def __del__(self):
         self.close()

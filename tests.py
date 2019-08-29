@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 
 import numpy as np
-from pytest import fixture, raises
+from pytest import fixture, raises, mark
 
 from mtscomp import add_default_handler, Writer, Reader, load_raw_data, compress, uncompress
 
@@ -49,6 +49,10 @@ def zeros():
 
 def randn():
     return np.random.normal(loc=0, scale=normal_std, size=(n_samples, n_channels))
+
+
+def randn_custom(ns, nc):
+    return np.random.normal(loc=0, scale=normal_std, size=(ns, nc))
 
 
 def white_sine():
@@ -201,6 +205,12 @@ def test_reader_indexing(path, arr):
     X = np.random.randint(low=-100, high=2 * N, size=(100, 3))
     items.extend([slice(start, stop, step) for start, stop, step in X])
 
+    items.extend([
+        (slice(None, None, None),),
+        (slice(None, None, None), slice(1, -1, 2)),
+        (slice(None, None, None), [1, 5, 3]),
+    ])
+
     # Single integers.
     items.extend([0, 1, N - 2, N - 1])  # N, N + 1, -1, -2])
     items.extend(np.random.randint(low=-N, high=N, size=100).tolist())
@@ -227,17 +237,23 @@ def test_reader_indexing(path, arr):
 # Read/write tests with different parameters
 #------------------------------------------------------------------------------
 
-def test_chunk_duration():
-    pass
+@mark.parametrize('chunk_duration', [.01, .1, 1., 10.])
+def test_chunk_duration(path, arr, chunk_duration):
+    _round_trip(path, arr, chunk_duration=chunk_duration)
 
 
-def test_n_channels():
-    pass
+@mark.parametrize('ns', [0, 1, 100, 10000])
+@mark.parametrize('nc', [0, 1, 10, 100])
+def test_n_channels(path, ns, nc):
+    arr = randn_custom(ns, nc)
+    if 0 in (ns, nc):
+        with raises(Exception):
+            _round_trip(path, arr)
+    else:
+        _round_trip(path, arr)
 
 
-def test_compression_levels():
-    pass
-
-
-def test_do_diff():
-    pass
+@mark.parametrize('do_diff', [True, False])
+@mark.parametrize('compression_level', [1, 3, 6, 9])
+def test_compression_levels_do_diff(path, arr, compression_level, do_diff):
+    _round_trip(path, arr, compression_level=compression_level, do_diff=do_diff)

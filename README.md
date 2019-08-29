@@ -46,18 +46,14 @@ For development only:
 * coverage
 
 
-## Command-line
-
-```bash
-mtscomp data.bin data.cbin cdata.ch --sample-rate|-s 30000 --dtype|-d uint8 --chunk-duration|-d 1 --compression-level|-l -1
-mtsuncomp data.cbin data.ch data.bin
-```
-
-
 ## High-level API
 
 ```python
-
+# Compress a .bin file into a pair (.cbin, .ch)
+compress('data.bin', 'data.cbin', 'data.ch', sample_rate=20000., n_channels=256, dtype=np.int16)
+# Uncompress a pair (.cbin, .ch) and return an object that can be sliced like a NumPy array.
+arr = uncompress('data.cbin', 'data.ch')
+X = arr[start:end, :]  # uncompress the data on the fly directly from the file on disk
 ```
 
 
@@ -67,19 +63,27 @@ mtsuncomp data.cbin data.ch data.bin
 # Define a writer to compress a flat raw binary file.
 w = Writer(chunk_duration=1.)
 # Open the file to compress.
-w.open('path/to/data.bin', sample_rate=20000., n_channels=256, dtype=np.int16)
+w.open('data.bin', sample_rate=20000., n_channels=256, dtype=np.int16)
 # Compress it into a compressed binary file, and a JSON header file.
-w.write('path/to/data.cbin', 'path/to/data.ch')
+w.write('data.cbin', 'data.ch')
 w.close()
 
 # Define a reader to uncompress a compressed array.
 r = Reader()
 # Open the compressed dataset.
-r.open('path/to/data.cbin', 'path/to/data.ch')
+r.open('data.cbin', 'data.ch')
 # The reader can be sliced as a NumPy array: uncompression happens on the fly. Only chunks
 # that need to be loaded are loaded and uncompressed.
 # Here, we load everything in memory.
 array = r[:]
 r.close()
 
+```
+
+
+## Command-line [WIP]
+
+```bash
+mtscomp data.bin data.cbin cdata.ch --sample-rate|-s 30000 --dtype|-d uint8 --chunk-duration|-d 1 --compression-level|-l -1
+mtsuncomp data.cbin data.ch data.bin
 ```
