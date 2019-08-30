@@ -13,7 +13,7 @@ Lossless compression for time-dependent signals with high sampling rate (tens of
 * Pure Python
 * As simple as possible
 * Scale well to large sampling rate and dimension
-* Can be uncompressed on the fly quickly (random access)
+* Can be decompressed on the fly quickly (random access)
 * Amenable to multithreading
 
 
@@ -50,10 +50,10 @@ For development only:
 
 ```python
 # Compress a .bin file into a pair (.cbin, .ch)
-compress('data.bin', 'data.cbin', 'data.ch', sample_rate=20000., n_channels=256, dtype=np.int16)
+compress('data.bin', 'data.cbin', 'data.ch', sample_rate=20000., n_channels=256, dtype=np.uint16)
 # Uncompress a pair (.cbin, .ch) and return an object that can be sliced like a NumPy array.
-arr = uncompress('data.cbin', 'data.ch')
-X = arr[start:end, :]  # uncompress the data on the fly directly from the file on disk
+arr = decompress('data.cbin', 'data.ch')
+X = arr[start:end, :]  # decompress the data on the fly directly from the file on disk
 ```
 
 
@@ -63,27 +63,30 @@ X = arr[start:end, :]  # uncompress the data on the fly directly from the file o
 # Define a writer to compress a flat raw binary file.
 w = Writer(chunk_duration=1.)
 # Open the file to compress.
-w.open('data.bin', sample_rate=20000., n_channels=256, dtype=np.int16)
+w.open('data.bin', sample_rate=20000., n_channels=256, dtype=np.uint16)
 # Compress it into a compressed binary file, and a JSON header file.
 w.write('data.cbin', 'data.ch')
 w.close()
 
-# Define a reader to uncompress a compressed array.
+# Define a reader to decompress a compressed array.
 r = Reader()
 # Open the compressed dataset.
 r.open('data.cbin', 'data.ch')
-# The reader can be sliced as a NumPy array: uncompression happens on the fly. Only chunks
-# that need to be loaded are loaded and uncompressed.
+# The reader can be sliced as a NumPy array: decompression happens on the fly. Only chunks
+# that need to be loaded are loaded and decompressed.
 # Here, we load everything in memory.
 array = r[:]
+# Or we can decompress into a new raw binary file on disk.
+r.tofile('data_dec.bin')
 r.close()
-
 ```
 
 
-## Command-line [WIP]
+## Command-line
 
 ```bash
-mtscomp data.bin data.cbin cdata.ch --sample-rate|-s 30000 --dtype|-d uint8 --chunk-duration|-d 1 --compression-level|-l -1
-mtsuncomp data.cbin data.ch data.bin
+# Compression: specify the number of channels, sample rate, dtype
+mtscomp data.bin data.cbin cdata.ch -n 385 -s 30000 -d uint16
+# Decompression
+mtsdecomp data.cbin data.ch data_dec.bin
 ```

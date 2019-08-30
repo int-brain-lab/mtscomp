@@ -32,20 +32,19 @@ FORMAT_VERSION = '0.0'  # development
 __all__ = ('load_raw_data', 'Writer', 'Reader', 'compress', 'decompress')
 
 
-DEFAULT_CHUNK_DURATION = 1.
-DEFAULT_ALGORITHM = 'zlib'
+DEFAULT_CHUNK_DURATION = 1.  # in seconds
+DEFAULT_ALGORITHM = 'zlib'  # only algorithm supported currently
 DEFAULT_COMPRESSION_LEVEL = -1
 DEFAULT_DO_TIME_DIFF = True
-DEFAULT_DO_SPATIAL_DIFF = False
-
+DEFAULT_DO_SPATIAL_DIFF = False  # benchmarks seem to show no compression performance benefits
 DEFAULT_CACHE_SIZE = 10  # number of chunks to keep in memory while reading the data
 
+# Automatic checks when compressing/decompressing.
 CHECK_AFTER_COMPRESS = True  # check the integrity of the compressed file
-CRITICAL_ERROR_URL = \
-    "https://github.com/int-brain-lab/mtscomp/issues/new?title=Critical+error"
-
 CHECK_AFTER_DECOMPRESS = True  # check the integrity of the decompressed file saved to disk
 CHECK_ATOL = 1e-16  # tolerance for floating point array comparison check
+CRITICAL_ERROR_URL = \
+    "https://github.com/int-brain-lab/mtscomp/issues/new?title=Critical+error"
 
 
 #------------------------------------------------------------------------------
