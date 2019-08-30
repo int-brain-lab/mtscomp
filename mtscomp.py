@@ -40,6 +40,7 @@ CRITICAL_ERROR_URL = \
     "https://github.com/int-brain-lab/mtscomp/issues/new?title=Critical+error"
 
 CHECK_AFTER_DECOMPRESS = True  # check the integrity of the decompressed file saved to disk
+CHECK_ATOL = 1e-16  # tolerance for floating point array comparison check
 
 
 #------------------------------------------------------------------------------
@@ -111,6 +112,29 @@ def load_raw_data(path=None, n_channels=None, dtype=None, offset=None, mmap=True
         return np.fromfile(str(path), dtype).reshape(shape)
 
 
+def diff_along_axis(chunk, axis=None):
+    if axis is None:
+        return chunk
+    assert 0 <= axis < chunk.ndim
+    chunkd = np.diff(chunk, axis=axis)
+    # The first row is the same (we need to keep the initial values in order to reconstruct
+    # the original array from the diff).
+    if axis == 0:
+        chunkd = np.concatenate((chunk[0, :][np.newaxis, :], chunkd), axis=axis)
+    elif axis == 1:
+        chunkd = np.concatenate((chunk[:, 0][:, np.newaxis], chunkd), axis=axis)
+    return chunkd
+
+
+def cumsum_along_axis(chunk, axis=None):
+    if axis is None:
+        return chunk
+    assert 0 <= axis < chunk.ndim
+    chunki = np.empty_like(chunk)
+    np.cumsum(chunk, axis=axis, out=chunki)
+    return chunki
+
+
 #------------------------------------------------------------------------------
 # Low-level API
 #------------------------------------------------------------------------------
@@ -129,18 +153,21 @@ class Writer:
         Compression level of the chosen algorithm.
     do_time_diff : bool
         Whether to compute the time-wise diff of the array before compressing.
+    do_spatial_diff : bool
+        Whether to compute the spatial diff of the array before compressing.
     before_check : function
         A callback method that could be called just before the integrity check.
 
     """
     def __init__(
             self, chunk_duration=DEFAULT_CHUNK_DURATION, compression_algorithm=None,
-            compression_level=-1, do_time_diff=True, before_check=None):
+            compression_level=-1, do_time_diff=True, do_spatial_diff=True, before_check=None):
         self.chunk_duration = chunk_duration
         self.compression_algorithm = compression_algorithm or DEFAULT_COMPRESSION_ALGORITHM
         assert self.compression_algorithm == 'zlib', "Only zlib is currently supported."
         self.compression_level = compression_level
         self.do_time_diff = do_time_diff
+        self.do_spatial_diff = do_spatial_diff
         self.before_check = before_check or (lambda x: None)
 
     def open(
@@ -202,6 +229,7 @@ class Writer:
             'compression_algorithm': self.compression_algorithm,
             'compression_level': self.compression_level,
             'do_time_diff': self.do_time_diff,
+            'do_spatial_diff': self.do_spatial_diff,
             'dtype': str(np.dtype(self.dtype)),
             'n_channels': self.n_channels,
             'sample_rate': self.sample_rate,
@@ -246,16 +274,17 @@ class Writer:
         chunk = self.get_chunk(chunk_idx)
         assert chunk.ndim == 2
         assert chunk.shape[1] == self.n_channels
-        # Compute the diff along the time axis.
-        if self.do_time_diff:
-            chunkd = np.diff(chunk, axis=0)
-            chunkd = np.concatenate((chunk[0, :][np.newaxis, :], chunkd), axis=0)
-        else:  # pragma: no cover
-            chunkd = chunk
-        # The first row is the same (we need to keep the initial values in order to reconstruct
-        # the original array from the diff)0
+        # Compute the diff along the time and/or spatial axis.
+        chunkd = diff_along_axis(chunk, axis=0 if self.do_time_diff else None)
+        chunkd = diff_along_axis(chunkd, axis=1 if self.do_spatial_diff else None)
         assert chunkd.shape == chunk.shape
-        assert np.array_equal(chunkd[0, :], chunk[0, :])
+        assert chunkd.dtype == chunk.dtype
+        # Check first line/column of the diffed chunk.
+        assert chunkd[0, 0] == chunk[0, 0]
+        if self.do_time_diff and not self.do_spatial_diff:
+            assert np.array_equal(chunkd[0, :], chunk[0, :])
+        elif not self.do_time_diff and self.do_spatial_diff:
+            assert np.array_equal(chunkd[:, 0], chunk[:, 0])
         # Compress the diff.
         chunkdc = zlib.compress(chunkd.tobytes())
         length = fb.write(chunkdc)
@@ -403,13 +432,10 @@ class Reader:
         n_samples_chunk = i1 - i0
         assert chunk.size == n_samples_chunk * self.n_channels
         chunk = chunk.reshape((n_samples_chunk, self.n_channels))
-        # Perform a cumsum.
-        if self.cmeta.do_time_diff:
-            chunki = np.empty_like(chunk)
-            np.cumsum(chunk, axis=0, out=chunki)
-        else:
-            chunki = chunk
-        assert chunki.shape == (n_samples_chunk, self.n_channels)
+        chunki = cumsum_along_axis(chunk, axis=1 if self.cmeta.do_spatial_diff else None)
+        chunki = cumsum_along_axis(chunki, axis=0 if self.cmeta.do_time_diff else None)
+        assert chunki.dtype == chunk.dtype
+        assert chunki.shape == chunk.shape == (n_samples_chunk, self.n_channels)
         return chunki
 
     def _validate_index(self, i, value_for_none=0):
@@ -536,14 +562,14 @@ def check(data, out, outmeta):
         else:
             # For floating point dtypes, check that the array are almost equal
             # (diff followed by cumsum does not yield exactly the same floating point numbers).
-            assert np.allclose(chunk, expected, atol=1e-16)
+            assert np.allclose(chunk, expected, atol=CHECK_ATOL)
 
 
 def compress(
         path, out=None, outmeta=None,
         sample_rate=None, n_channels=None, dtype=None,
         chunk_duration=DEFAULT_CHUNK_DURATION, compression_algorithm=None,
-        compression_level=-1, do_time_diff=True):
+        compression_level=-1, do_time_diff=True, do_spatial_diff=True):
     """Compress a NumPy-like array (may be memmapped) into a compressed format
     (two files, out and outmeta).
 
@@ -570,6 +596,8 @@ def compress(
         Compression level of the chosen algorithm.
     do_time_diff : bool
         Whether to compute the time-wise diff of the array before compressing.
+    do_spatial_diff : bool
+        Whether to compute the spatial diff of the array before compressing.
 
     Returns
     -------
@@ -600,8 +628,10 @@ def compress(
     """
 
     w = Writer(
-        chunk_duration=chunk_duration, compression_algorithm=compression_algorithm,
-        compression_level=compression_level, do_time_diff=do_time_diff)
+        chunk_duration=chunk_duration,
+        compression_algorithm=compression_algorithm,
+        compression_level=compression_level,
+        do_time_diff=do_time_diff, do_spatial_diff=do_spatial_diff)
     w.open(path, sample_rate=sample_rate, n_channels=n_channels, dtype=dtype)
     length = w.write(out, outmeta)
     w.close()

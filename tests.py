@@ -19,8 +19,9 @@ import numpy as np
 from pytest import fixture, raises, mark
 
 from mtscomp import (
-    add_default_handler, Writer, Reader, load_raw_data, compress, decompress,
-    mtsdesc, mtscomp, mtsdecomp)
+    add_default_handler, Writer, Reader, load_raw_data, diff_along_axis, cumsum_along_axis,
+    compress, decompress, mtsdesc, mtscomp, mtsdecomp,
+    CHECK_ATOL)
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,24 @@ def test_int16(arr):
     arr16 = _to_int16(arr, M=M)
     arr_ = _from_int16(arr16, M)
     assert np.allclose(arr_, arr, atol=1e-4)
+
+
+@mark.parametrize('ax1', [None, 0, 1])
+@mark.parametrize('ax2', [None, 0, 1])
+def test_diff_cumsum_1(arr, ax1, ax2):
+    if ax1 == ax2 and ax1 is not None:
+        # Skip double diff along the same axis.
+        return
+    arrd = diff_along_axis(arr, axis=ax1)
+    arrd = diff_along_axis(arrd, axis=ax2)
+    arr2 = cumsum_along_axis(arrd, axis=ax2)
+    arr2 = cumsum_along_axis(arr2, axis=ax1)
+    assert arr.shape == arr2.shape
+    assert arr.dtype == arr2.dtype
+    if np.issubdtype(arr.dtype, np.integer):
+        assert np.array_equal(arr, arr2)
+    else:
+        assert np.allclose(arr, arr2, atol=CHECK_ATOL)
 
 
 #------------------------------------------------------------------------------
