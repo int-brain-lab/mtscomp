@@ -33,8 +33,13 @@ __all__ = ('load_raw_data', 'Writer', 'Reader', 'compress', 'decompress')
 
 
 DEFAULT_CHUNK_DURATION = 1.
-DEFAULT_COMPRESSION_ALGORITHM = 'zlib'
+DEFAULT_ALGORITHM = 'zlib'
+DEFAULT_COMPRESSION_LEVEL = -1
+DEFAULT_DO_TIME_DIFF = True
+DEFAULT_DO_SPATIAL_DIFF = False
+
 DEFAULT_CACHE_SIZE = 10  # number of chunks to keep in memory while reading the data
+
 CHECK_AFTER_COMPRESS = True  # check the integrity of the compressed file
 CRITICAL_ERROR_URL = \
     "https://github.com/int-brain-lab/mtscomp/issues/new?title=Critical+error"
@@ -113,6 +118,9 @@ def load_raw_data(path=None, n_channels=None, dtype=None, offset=None, mmap=True
 
 
 def diff_along_axis(chunk, axis=None):
+    """Perform a diff along a given axis in a 2D array.
+    Keep the first line/column identical.
+    """
     if axis is None:
         return chunk
     assert 0 <= axis < chunk.ndim
@@ -120,13 +128,16 @@ def diff_along_axis(chunk, axis=None):
     # The first row is the same (we need to keep the initial values in order to reconstruct
     # the original array from the diff).
     if axis == 0:
+        logger.debug("Performing time diff.")
         chunkd = np.concatenate((chunk[0, :][np.newaxis, :], chunkd), axis=axis)
     elif axis == 1:
+        logger.debug("Performing spatial diff.")
         chunkd = np.concatenate((chunk[:, 0][:, np.newaxis], chunkd), axis=axis)
     return chunkd
 
 
 def cumsum_along_axis(chunk, axis=None):
+    """Perform a cumsum (inverse of diff) along a given axis in a 2D array."""
     if axis is None:
         return chunk
     assert 0 <= axis < chunk.ndim
@@ -147,9 +158,9 @@ class Writer:
 
     chunk_duration : float
         Duration of the chunks, in seconds.
-    compression_algorithm : str
+    algorithm : str
         Name of the compression algorithm. Only `zlib` is supported at the moment.
-    compression_level : int
+    comp_level : int
         Compression level of the chosen algorithm.
     do_time_diff : bool
         Whether to compute the time-wise diff of the array before compressing.
@@ -160,14 +171,17 @@ class Writer:
 
     """
     def __init__(
-            self, chunk_duration=DEFAULT_CHUNK_DURATION, compression_algorithm=None,
-            compression_level=-1, do_time_diff=True, do_spatial_diff=True, before_check=None):
-        self.chunk_duration = chunk_duration
-        self.compression_algorithm = compression_algorithm or DEFAULT_COMPRESSION_ALGORITHM
-        assert self.compression_algorithm == 'zlib', "Only zlib is currently supported."
-        self.compression_level = compression_level
-        self.do_time_diff = do_time_diff
-        self.do_spatial_diff = do_spatial_diff
+            self, chunk_duration=None, before_check=None,
+            algorithm=None, comp_level=None,
+            do_time_diff=None, do_spatial_diff=None,
+    ):
+        self.chunk_duration = chunk_duration or DEFAULT_CHUNK_DURATION
+        self.algorithm = algorithm or DEFAULT_ALGORITHM
+        assert self.algorithm == 'zlib', "Only zlib is currently supported."
+        self.comp_level = comp_level if comp_level is not None else DEFAULT_COMPRESSION_LEVEL
+        self.do_time_diff = do_time_diff if do_time_diff is not None else DEFAULT_DO_TIME_DIFF
+        self.do_spatial_diff = (
+            do_spatial_diff if do_spatial_diff is not None else DEFAULT_DO_SPATIAL_DIFF)
         self.before_check = before_check or (lambda x: None)
 
     def open(
@@ -226,8 +240,8 @@ class Writer:
         """Return the metadata of the compressed file."""
         return {
             'version': FORMAT_VERSION,
-            'compression_algorithm': self.compression_algorithm,
-            'compression_level': self.compression_level,
+            'algorithm': self.algorithm,
+            'comp_level': self.comp_level,
             'do_time_diff': self.do_time_diff,
             'do_spatial_diff': self.do_spatial_diff,
             'dtype': str(np.dtype(self.dtype)),
@@ -286,6 +300,7 @@ class Writer:
         elif not self.do_time_diff and self.do_spatial_diff:
             assert np.array_equal(chunkd[:, 0], chunk[:, 0])
         # Compress the diff.
+        logger.debug("Compressing %d MB...", (chunkd.size * chunk.itemsize) / 1024. ** 2)
         chunkdc = zlib.compress(chunkd.tobytes())
         length = fb.write(chunkdc)
         ratio = 100 - 100 * length / (chunk.size * chunk.itemsize)
@@ -365,8 +380,8 @@ class Reader:
         may take a few dozens of MB in RAM.
 
     """
-    def __init__(self, cache_size=DEFAULT_CACHE_SIZE):
-        self.cache_size = cache_size or 0
+    def __init__(self, cache_size=None):
+        self.cache_size = cache_size if cache_size is not None else DEFAULT_CACHE_SIZE
 
     def open(self, cdata, cmeta):
         """Open a compressed data file.
@@ -467,8 +482,8 @@ class Reader:
     def tofile(self, out):
         """Write the decompressed array to disk."""
         out = Path(out)
-        if out.exists():  # pragma: no cover
-            raise ValueError("The output file %s already exists." % out)
+        # if out.exists():  # pragma: no cover
+        #     raise ValueError("The output file %s already exists." % out)
         # Read all chunks and save them to disk.
         with open(out, 'wb') as fb:
             for chunk_idx, chunk_start, chunk_length in self.iter_chunks():
@@ -568,8 +583,8 @@ def check(data, out, outmeta):
 def compress(
         path, out=None, outmeta=None,
         sample_rate=None, n_channels=None, dtype=None,
-        chunk_duration=DEFAULT_CHUNK_DURATION, compression_algorithm=None,
-        compression_level=-1, do_time_diff=True, do_spatial_diff=True):
+        chunk_duration=None, algorithm=None,
+        comp_level=None, do_time_diff=None, do_spatial_diff=None):
     """Compress a NumPy-like array (may be memmapped) into a compressed format
     (two files, out and outmeta).
 
@@ -590,9 +605,9 @@ def compress(
         Number of channels in the file.
     chunk_duration : float
         Duration of the chunks, in seconds.
-    compression_algorithm : str
+    algorithm : str
         Name of the compression algorithm. Only `zlib` is supported at the moment.
-    compression_level : int
+    comp_level : int
         Compression level of the chosen algorithm.
     do_time_diff : bool
         Whether to compute the time-wise diff of the array before compressing.
@@ -612,9 +627,9 @@ def compress(
 
     version : str
         Version number of the compression format.
-    compression_algorithm : str
+    algorithm : str
         Name of the compression algorithm. Only `zlib` is supported at the moment.
-    compression_level : str
+    comp_level : str
         Compression level to be passed to the compression function.
     n_channels : int
         Number of channels.
@@ -629,9 +644,11 @@ def compress(
 
     w = Writer(
         chunk_duration=chunk_duration,
-        compression_algorithm=compression_algorithm,
-        compression_level=compression_level,
-        do_time_diff=do_time_diff, do_spatial_diff=do_spatial_diff)
+        algorithm=algorithm,
+        comp_level=comp_level,
+        do_time_diff=do_time_diff,
+        do_spatial_diff=do_spatial_diff,
+    )
     w.open(path, sample_rate=sample_rate, n_channels=n_channels, dtype=dtype)
     length = w.write(out, outmeta)
     w.close()

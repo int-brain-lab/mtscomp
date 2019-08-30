@@ -328,9 +328,12 @@ def test_n_channels(path, ns, nc):
 
 
 @mark.parametrize('do_time_diff', [True, False])
-@mark.parametrize('compression_level', [1, 3, 6, 9])
-def test_compression_levels_do_time_diff(path, arr, compression_level, do_time_diff):
-    _round_trip(path, arr, compression_level=compression_level, do_time_diff=do_time_diff)
+@mark.parametrize('do_spatial_diff', [True, False])
+@mark.parametrize('comp_level', [1, 3, 6, 9])
+def test_comp_levels_do_diff(path, arr, comp_level, do_time_diff, do_spatial_diff):
+    _round_trip(
+        path, arr, comp_level=comp_level,
+        do_time_diff=do_time_diff, do_spatial_diff=do_spatial_diff)
 
 
 #------------------------------------------------------------------------------
