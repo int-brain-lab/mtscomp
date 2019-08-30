@@ -127,7 +127,7 @@ class Writer:
         Name of the compression algorithm. Only `zlib` is supported at the moment.
     compression_level : int
         Compression level of the chosen algorithm.
-    do_diff : bool
+    do_time_diff : bool
         Whether to compute the time-wise diff of the array before compressing.
     before_check : function
         A callback method that could be called just before the integrity check.
@@ -135,12 +135,12 @@ class Writer:
     """
     def __init__(
             self, chunk_duration=DEFAULT_CHUNK_DURATION, compression_algorithm=None,
-            compression_level=-1, do_diff=True, before_check=None):
+            compression_level=-1, do_time_diff=True, before_check=None):
         self.chunk_duration = chunk_duration
         self.compression_algorithm = compression_algorithm or DEFAULT_COMPRESSION_ALGORITHM
         assert self.compression_algorithm == 'zlib', "Only zlib is currently supported."
         self.compression_level = compression_level
-        self.do_diff = do_diff
+        self.do_time_diff = do_time_diff
         self.before_check = before_check or (lambda x: None)
 
     def open(
@@ -201,7 +201,7 @@ class Writer:
             'version': FORMAT_VERSION,
             'compression_algorithm': self.compression_algorithm,
             'compression_level': self.compression_level,
-            'do_diff': self.do_diff,
+            'do_time_diff': self.do_time_diff,
             'dtype': str(np.dtype(self.dtype)),
             'n_channels': self.n_channels,
             'sample_rate': self.sample_rate,
@@ -247,7 +247,7 @@ class Writer:
         assert chunk.ndim == 2
         assert chunk.shape[1] == self.n_channels
         # Compute the diff along the time axis.
-        if self.do_diff:
+        if self.do_time_diff:
             chunkd = np.diff(chunk, axis=0)
             chunkd = np.concatenate((chunk[0, :][np.newaxis, :], chunkd), axis=0)
         else:  # pragma: no cover
@@ -404,7 +404,7 @@ class Reader:
         assert chunk.size == n_samples_chunk * self.n_channels
         chunk = chunk.reshape((n_samples_chunk, self.n_channels))
         # Perform a cumsum.
-        if self.cmeta.do_diff:
+        if self.cmeta.do_time_diff:
             chunki = np.empty_like(chunk)
             np.cumsum(chunk, axis=0, out=chunki)
         else:
@@ -543,7 +543,7 @@ def compress(
         path, out=None, outmeta=None,
         sample_rate=None, n_channels=None, dtype=None,
         chunk_duration=DEFAULT_CHUNK_DURATION, compression_algorithm=None,
-        compression_level=-1, do_diff=True):
+        compression_level=-1, do_time_diff=True):
     """Compress a NumPy-like array (may be memmapped) into a compressed format
     (two files, out and outmeta).
 
@@ -568,7 +568,7 @@ def compress(
         Name of the compression algorithm. Only `zlib` is supported at the moment.
     compression_level : int
         Compression level of the chosen algorithm.
-    do_diff : bool
+    do_time_diff : bool
         Whether to compute the time-wise diff of the array before compressing.
 
     Returns
@@ -601,7 +601,7 @@ def compress(
 
     w = Writer(
         chunk_duration=chunk_duration, compression_algorithm=compression_algorithm,
-        compression_level=compression_level, do_diff=do_diff)
+        compression_level=compression_level, do_time_diff=do_time_diff)
     w.open(path, sample_rate=sample_rate, n_channels=n_channels, dtype=dtype)
     length = w.write(out, outmeta)
     w.close()
