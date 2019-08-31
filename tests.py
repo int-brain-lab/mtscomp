@@ -14,6 +14,7 @@ import logging
 import os
 from pathlib import Path
 import re
+from time import sleep
 
 import numpy as np
 from pytest import fixture, raises, mark
@@ -274,10 +275,11 @@ def test_check_fail(path, arr):
         writer.close()
         # Then, we change one byte in it.
         with open(str(path), 'wb') as f:
-            f.seek(np.random.randint(0, out.stat().st_size))
+            f.seek(out.stat().st_size // 2)
             f.write(os.urandom(1))
+            f.seek(0)
         # Finally, we open it again before the check.
-        w.open(path, sample_rate=sample_rate, n_channels=arr.shape[1], dtype=arr.dtype)
+        writer.open(path, sample_rate=sample_rate, n_channels=arr.shape[1], dtype=arr.dtype)
 
     # Compress the file.
     with raises(RuntimeError):
