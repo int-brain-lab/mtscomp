@@ -331,11 +331,16 @@ def test_n_channels(path, ns, nc):
 
 @mark.parametrize('do_time_diff', [True, False])
 @mark.parametrize('do_spatial_diff', [True, False])
-@mark.parametrize('comp_level', [1, 3, 6, 9])
+@mark.parametrize('comp_level', [1, 6, 9])
 def test_comp_levels_do_diff(path, arr, comp_level, do_time_diff, do_spatial_diff):
     _round_trip(
         path, arr, comp_level=comp_level,
         do_time_diff=do_time_diff, do_spatial_diff=do_spatial_diff)
+
+
+@mark.parametrize('n_threads', [1, 2, 4, None])
+def test_n_threads(path, arr, n_threads):
+    _round_trip(path, arr, n_threads=n_threads)
 
 
 #------------------------------------------------------------------------------
