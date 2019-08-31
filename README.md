@@ -3,34 +3,32 @@
 [![Build Status](https://travis-ci.org/int-brain-lab/mtscomp.svg?branch=master)](https://travis-ci.org/int-brain-lab/mtscomp)
 [![Coverage Status](https://codecov.io/gh/int-brain-lab/mtscomp/branch/master/graph/badge.svg)](https://codecov.io/gh/int-brain-lab/mtscomp)
 
-
-Lossless compression for time-dependent signals with high sampling rate (tens of thousands of Hz) and high dimensionality (hundreds or thousands of channels). Developed for large-scale ephys neuro recordings (e.g. Neuropixels).
-
-
-## Requested features
-
-* Lossless
-* Pure Python
-* As simple as possible
-* Scale well to large sampling rate and dimension
-* Can be decompressed on the fly quickly (random access)
-* Amenable to multithreading
+This library implements a simple lossless compression scheme adapted to time-dependent high-frequency, high-dimensional signals. It is being developed within the [International Brain Laboratory](https://www.internationalbrainlab.com/) with the aim of being the compression library used for all large-scale electrophysiological recordings based on Neuropixels. The signals are typically recorded at 30 kHz and 10 bit depth, and contain several hundreds of channels.
 
 
-## Process
+## Compression scheme
 
-* Input data is a `(n_samples, n_channels)` array.
-* Split it in the time domain into e.g. 1-second chunks.
-* For every chunk, keep the first value on every channel.
-* Compute the channel-wise time difference, i.e. `x[i + 1, :] - x[i, :]`.
-* Compress that with a lossless compression algorithm (e.g. gzip).
-* Save the offsets of the chunks within the compressed file in a separate metadata file.
+The requested features for the compression scheme were as follows:
 
+* Lossless compression only (one should retrieve byte-to-byte exact decompressed data).
+* Written in pure Python (no C extensions) with minimal dependencies so as to simplify distribution.
+* Scalable to large sample rates, large number of channels, long recording time.
+* Faster than real time (i.e. it should take less time to compress than to record).
+* Multithreaded so as to leverage multiple CPU cores.
+* On-the-fly decompression and random read accesses.
+* As simple as possible.
 
-## File specification
+The compression scheme is the following:
 
-* `data.cbin`: compressed data file. Binary concatenation of compressed chunk raw binary data. Every chunk is binary zlib-compressed data of the corresponding data chunk.
-* `data.ch`: JSON file with metadata about the compression, including the chunk offsets used for on-the-fly reading.
+* The data is split into chunks along the time axis.
+* The time differences are computed for all channels.
+* These time differences are compressed with zlib.
+* The compressed chunks are appended in a binary file.
+* Metadata about the compression, including the chunk offsets within the compressed binary file, are saved in a secondary JSON file.
+
+Saving the offsets allows for on-the-fly decompression and random data access: one simply has to determine which chunks should be loaded, and load them directly from the compressed binary file. The compressed chunks are decompressed with zlib, and the original data is recovered with a cumulative sum (the inverse of the time difference operation).
+
+With large-scale neurophysiological recordings, a compression ration of 3x could be obtained.
 
 
 ## Dependencies
@@ -49,9 +47,9 @@ For development only:
 ## High-level API
 
 ```python
-# Compress a .bin file into a pair (.cbin, .ch)
+# Compress a .bin file into a pair .cbin (compressed binary file) and .ch (JSON file).
 compress('data.bin', 'data.cbin', 'data.ch', sample_rate=20000., n_channels=256, dtype=np.uint16)
-# Uncompress a pair (.cbin, .ch) and return an object that can be sliced like a NumPy array.
+# Decompress a pair (.cbin, .ch) and return an object that can be sliced like a NumPy array.
 arr = decompress('data.cbin', 'data.ch')
 X = arr[start:end, :]  # decompress the data on the fly directly from the file on disk
 ```
@@ -90,3 +88,18 @@ mtscomp data.bin data.cbin cdata.ch -n 385 -s 30000 -d uint16
 # Decompression
 mtsdecomp data.cbin data.ch data_dec.bin
 ```
+
+
+## Implementation details
+
+* **Multithreading**: since Python's zlib releases the GIL, the library uses multiple threads when compressing a file. The chunks are grouped in batches containing as many chunks as threads. After each batch, the chunks are written in the binary file in the right order (since the threads of the batch have no reason to finish in order).
+
+
+## Performance
+
+Preliminary benchmarks on an Neuropixels dataset (30 kHz, 385 channels, 10 seconds recording) and quad-core Intel i7 CPU:
+
+* Compression ratio: -63%
+* Compression write time (single-threaded): 10 M/s, 2x slower than real time
+* Compression write time (multithreaded, 4 physical CPU cores): 30 M/s, 1.3x faster than real time
+* Compression read time (single-threaded): 24 M/s, 30x slower than uncompressed, 3x faster than real time
