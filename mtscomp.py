@@ -12,6 +12,8 @@ import bisect
 from functools import lru_cache
 import json
 import logging
+import multiprocessing as mp
+from multiprocessing.dummy import Pool as ThreadPool
 import os.path as op
 from pathlib import Path
 import sys
@@ -38,6 +40,7 @@ DEFAULT_COMPRESSION_LEVEL = -1
 DEFAULT_DO_TIME_DIFF = True
 DEFAULT_DO_SPATIAL_DIFF = False  # benchmarks seem to show no compression performance benefits
 DEFAULT_CACHE_SIZE = 10  # number of chunks to keep in memory while reading the data
+DEFAULT_N_THREADS = mp.cpu_count()
 
 # Automatic checks when compressing/decompressing.
 CHECK_AFTER_COMPRESS = True  # check the integrity of the compressed file
@@ -165,6 +168,8 @@ class Writer:
         Whether to compute the time-wise diff of the array before compressing.
     do_spatial_diff : bool
         Whether to compute the spatial diff of the array before compressing.
+    n_threads : int
+        Number of CPUs to use for compression. By default, use all of them.
     before_check : function
         A callback method that could be called just before the integrity check.
 
@@ -173,6 +178,7 @@ class Writer:
             self, chunk_duration=None, before_check=None,
             algorithm=None, comp_level=None,
             do_time_diff=None, do_spatial_diff=None,
+            n_threads=None,
     ):
         self.chunk_duration = chunk_duration or DEFAULT_CHUNK_DURATION
         self.algorithm = algorithm or DEFAULT_ALGORITHM
@@ -181,6 +187,7 @@ class Writer:
         self.do_time_diff = do_time_diff if do_time_diff is not None else DEFAULT_DO_TIME_DIFF
         self.do_spatial_diff = (
             do_spatial_diff if do_spatial_diff is not None else DEFAULT_DO_SPATIAL_DIFF)
+        self.n_threads = n_threads or DEFAULT_N_THREADS  # 1 means no multithreading
         self.before_check = before_check or (lambda x: None)
 
     def open(
@@ -234,6 +241,9 @@ class Writer:
         assert self.chunk_bounds[0] == 0
         assert self.chunk_bounds[-1] == self.n_samples
         logger.debug("Chunk bounds: %s", self.chunk_bounds)
+        # Batches.
+        self.batch_size = self.n_threads  # in each batch, there is 1 chunk per thread.
+        self.n_batches = int(np.ceil(self.n_chunks / self.batch_size))
 
     def get_cmeta(self):
         """Return the metadata of the compressed file."""
@@ -265,24 +275,7 @@ class Writer:
         i1 = self.chunk_bounds[chunk_idx + 1]
         return self.data[i0:i1, :]
 
-    def write_chunk(self, chunk_idx, fb):
-        """Write a given chunk into the output file.
-
-        Parameters
-        ----------
-
-        chunk_idx : int
-            Index of the chunk, from 0 to `n_chunks - 1`.
-        fb : file_handle
-            File handle of the compressed binary file to be written.
-
-        Returns
-        -------
-
-        length : int
-            The number of bytes written in the compressed binary file.
-
-        """
+    def _compress_chunk(self, chunk_idx):
         # Retrieve the chunk data as a 2D NumPy array.
         chunk = self.get_chunk(chunk_idx)
         assert chunk.ndim == 2
@@ -301,11 +294,35 @@ class Writer:
         # Compress the diff.
         logger.debug("Compressing %d MB...", (chunkd.size * chunk.itemsize) / 1024. ** 2)
         chunkdc = zlib.compress(chunkd.tobytes())
-        length = fb.write(chunkdc)
-        ratio = 100 - 100 * length / (chunk.size * chunk.itemsize)
+        ratio = 100 - 100 * len(chunkdc) / (chunk.size * chunk.itemsize)
         logger.debug("Chunk %d/%d: -%.3f%%.", chunk_idx + 1, self.n_chunks, ratio)
-        # Return the number of bytes written.
-        return length
+        return chunk_idx, chunkdc
+
+    def compress_batch(self, first_chunk, last_chunk):
+        """Write a given chunk into the output file.
+
+        Parameters
+        ----------
+
+        first_chunk : int
+            Index of the first chunk in the batch (included).
+        last_chunk : int
+            Index of the last chunk in the batch (excluded).
+
+        Returns
+        -------
+
+        chunks : dict
+            A dictionary mapping chunk indices to compressed chunks.
+
+        """
+        assert 0 <= first_chunk < last_chunk <= self.n_chunks
+        if self.n_threads == 1:
+            chunks = [
+                self._compress_chunk(chunk_idx) for chunk_idx in range(first_chunk, last_chunk)]
+        elif self.n_threads >= 2:
+            chunks = self.pool.map(self._compress_chunk, range(first_chunk, last_chunk))
+        return dict(chunks)
 
     def write(self, out, outmeta):
         """Write the compressed data in a compressed binary file, and a compression header file
@@ -337,14 +354,36 @@ class Writer:
         # Write all chunks.
         offset = 0
         self.chunk_offsets = [0]
+        # Create the thread pool.
+        self.pool = ThreadPool(self.batch_size)
         with open(out, 'wb') as fb:
-            for chunk_idx in range(self.n_chunks):
-                length = self.write_chunk(chunk_idx, fb)
-                offset += length
-                self.chunk_offsets.append(offset)
+            for batch in range(self.n_batches):
+                first_chunk = self.batch_size * batch  # first included
+                last_chunk = min(self.batch_size * (batch + 1), self.n_chunks)  # last excluded
+                assert 0 <= first_chunk < last_chunk <= self.n_chunks
+                logger.debug(
+                    "Processing batch #%d with chunks %s.",
+                    batch, ', '.join(map(str, range(first_chunk, last_chunk))))
+                # Compress all chunks in the batch.
+                compressed_chunks = self.compress_batch(first_chunk, last_chunk)
+                # Return a dictionary chunk_idx: compressed_buffer
+                assert set(compressed_chunks.keys()) <= set(range(first_chunk, last_chunk))
+                # Write the batch chunks to disk.
+                # Warning: we need to process the chunks in order.
+                for chunk_idx in sorted(compressed_chunks.keys()):
+                    compressed_chunk = compressed_chunks[chunk_idx]
+                    fb.write(compressed_chunk)
+                    # Append the chunk offsets.
+                    length = len(compressed_chunk)
+                    offset += length
+                    self.chunk_offsets.append(offset)
             # Final size of the file.
             csize = fb.tell()
         assert self.chunk_offsets[-1] == csize
+        # Close the thread pool.
+        self.pool.close()
+        self.pool.join()
+        # Compute the compression ratio.
         ratio = csize / self.file_size
         logger.info("Wrote %s (-%.3f%%).", out, 100 - 100 * ratio)
         # Write the metadata file.
@@ -583,7 +622,8 @@ def compress(
         path, out=None, outmeta=None,
         sample_rate=None, n_channels=None, dtype=None,
         chunk_duration=None, algorithm=None,
-        comp_level=None, do_time_diff=None, do_spatial_diff=None):
+        comp_level=None, do_time_diff=None, do_spatial_diff=None,
+        n_threads=None):
     """Compress a NumPy-like array (may be memmapped) into a compressed format
     (two files, out and outmeta).
 
@@ -612,6 +652,8 @@ def compress(
         Whether to compute the time-wise diff of the array before compressing.
     do_spatial_diff : bool
         Whether to compute the spatial diff of the array before compressing.
+    n_threads : int
+        Number of CPUs to use for compression. By default, use all of them.
 
     Returns
     -------
@@ -647,6 +689,7 @@ def compress(
         comp_level=comp_level,
         do_time_diff=do_time_diff,
         do_spatial_diff=do_spatial_diff,
+        n_threads=n_threads,
     )
     w.open(path, sample_rate=sample_rate, n_channels=n_channels, dtype=dtype)
     length = w.write(out, outmeta)
@@ -708,6 +751,8 @@ def mtscomp_parse_args(args):
     parser.add_argument('-d', type=str, help='data type')
     parser.add_argument('-s', type=float, help='sample rate')
     parser.add_argument('-n', type=int, help='number of channels')
+    parser.add_argument('-c', type=int, help='number of CPUs to use')
+    parser.add_argument('-v', action='store_true', help='verbose')
 
     return parser.parse_args(args)
 
@@ -715,9 +760,11 @@ def mtscomp_parse_args(args):
 def mtscomp(args=None):
     """Compress a file."""
     parser = mtscomp_parse_args(args or sys.argv[1:])
+    add_default_handler('DEBUG' if parser.v else 'INFO')
     compress(
         parser.path, parser.out, parser.outmeta,
-        sample_rate=parser.s, n_channels=parser.n, dtype=np.dtype(parser.d))
+        sample_rate=parser.s, n_channels=parser.n, dtype=np.dtype(parser.d),
+        n_threads=parser.c)
 
 
 #------------------------------------------------------------------------------
@@ -730,25 +777,22 @@ def mtsdecomp_parse_args(args):
 
     parser.add_argument(
         'cdata', type=str,
-        help='path to the compressed binary file')
+        help='path to the input compressed binary file')
 
     parser.add_argument(
         'cmeta', type=str,
-        help='path to the compression metadata file')
+        help='path to the input compression metadata file')
 
     parser.add_argument(
         'out', type=str, nargs='?',
-        help='path to the decompressed file')
-
-    parser.add_argument('-d', type=str, help='data type')
-    parser.add_argument('-s', type=float, help='sample rate')
-    parser.add_argument('-n', type=int, help='number of channels')
+        help='path to the output decompressed file')
 
     return parser.parse_args(args)
 
 
 def mtsdecomp(args=None):
     """Decompress a file."""
+    add_default_handler('INFO')
     parser = mtsdecomp_parse_args(args or sys.argv[1:])
     decompress(parser.cdata, parser.cmeta, parser.out)
 

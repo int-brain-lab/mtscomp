@@ -58,19 +58,23 @@ params = {
     'ds': {
         'title': 'dataset',
         'values': [
-            ('imec_385_1s.bin', 385, 3e4, 1.),
+            ('imec_385_10s.bin', 385, 3e4, 1.),
             # ('imec_385_10s.bin', 385, 3e4, 10.),
             # ('pierre_10s.bin', 256, 2e4, 10.),
         ],
     },
-    'do_time_diff': {
-        'title': 'time diff',
-        'values': [False, True],
+    'n_threads': {
+        'title': 'n_threads',
+        'values': [1, 2, 4, 8]
     },
-    'do_spatial_diff': {
-        'title': 'spatial diff',
-        'values': [False, True],
-    },
+    # 'do_time_diff': {
+    #     'title': 'time diff',
+    #     'values': [False, True],
+    # },
+    # 'do_spatial_diff': {
+    #     'title': 'spatial diff',
+    #     'values': [False, True],
+    # },
 
     # 'compression_level': {
     #     'title': 'Compression level',

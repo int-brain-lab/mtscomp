@@ -6,6 +6,8 @@ tmp
 .*fuse*
 *.orig
 *.log*
+*.lprof
+*.txt
 .eggs
 .profile
 __pycache__
