@@ -3,6 +3,8 @@
 [![Build Status](https://travis-ci.org/int-brain-lab/mtscomp.svg?branch=master)](https://travis-ci.org/int-brain-lab/mtscomp)
 [![Coverage Status](https://codecov.io/gh/int-brain-lab/mtscomp/branch/master/graph/badge.svg)](https://codecov.io/gh/int-brain-lab/mtscomp)
 
+**This library is still experimental and has not been used in production yet.**
+
 This library implements a simple lossless compression scheme adapted to time-dependent high-frequency, high-dimensional signals. It is being developed within the [International Brain Laboratory](https://www.internationalbrainlab.com/) with the aim of being the compression library used for all large-scale electrophysiological recordings based on Neuropixels. The signals are typically recorded at 30 kHz and 10 bit depth, and contain several hundreds of channels.
 
 
@@ -35,6 +37,7 @@ With large-scale neurophysiological recordings, a compression ration of 3x could
 
 * Python 3.7+
 * NumPy
+* tqdm [for the progress bar]
 
 For development only:
 
@@ -42,6 +45,23 @@ For development only:
 * pytest
 * pytest-cov
 * coverage
+
+
+## Installation
+
+```
+pip install git+https://github.com/int-brain-lab/mtscomp.git
+```
+
+
+## Command-line
+
+```bash
+# Compression: specify the number of channels, sample rate, dtype
+mtscomp data.bin data.cbin cdata.ch -n 385 -s 30000 -d uint16
+# Decompression
+mtsdecomp data.cbin data.ch data_dec.bin
+```
 
 
 ## High-level API
@@ -80,16 +100,6 @@ r.close()
 ```
 
 
-## Command-line
-
-```bash
-# Compression: specify the number of channels, sample rate, dtype
-mtscomp data.bin data.cbin cdata.ch -n 385 -s 30000 -d uint16
-# Decompression
-mtsdecomp data.cbin data.ch data_dec.bin
-```
-
-
 ## Implementation details
 
 * **Multithreading**: since Python's zlib releases the GIL, the library uses multiple threads when compressing a file. The chunks are grouped in batches containing as many chunks as threads. After each batch, the chunks are written in the binary file in the right order (since the threads of the batch have no reason to finish in order).
@@ -97,9 +107,9 @@ mtsdecomp data.cbin data.ch data_dec.bin
 
 ## Performance
 
-Preliminary benchmarks on an Neuropixels dataset (30 kHz, 385 channels, 10 seconds recording) and quad-core Intel i7 CPU:
+Preliminary benchmarks on an Neuropixels dataset (30 kHz, 385 channels) and Intel(R) Core(TM) i7-6700K CPU @ 4.00GHz:
 
-* Compression ratio: -63%
-* Compression write time (single-threaded): 10 M/s, 2x slower than real time
-* Compression write time (multithreaded, 4 physical CPU cores): 30 M/s, 1.3x faster than real time
-* Compression read time (single-threaded): 24 M/s, 30x slower than uncompressed, 3x faster than real time
+* Compression ratio: -63% (compressed files are nearly 3x smaller)
+* Compression write time (single-threaded): 10 MB/s, 2x slower than real time
+* Compression write time (8 threads): 3-5x faster than single-threaded
+* Compression read time (single-threaded): 24 MB/s, 30x slower than uncompressed, 3x faster than real time

@@ -25,14 +25,15 @@ def mtscomp_perf(**kwargs):
     outmeta = path.parent / 'data.ch'
     t0 = time.perf_counter()
     compress(
-        path, out, outmeta, sample_rate=sample_rate, n_channels=n_channels, dtype=dtype, **kwargs)
+        path, out, outmeta, sample_rate=sample_rate, n_channels=n_channels, dtype=dtype,
+        check_after_compress=False, **kwargs)
     t1 = time.perf_counter()
     wt = t1 - t0
 
     # Decompress the file and write it to disk.
     out2 = path.with_suffix('.decomp.bin')
     t0 = time.perf_counter()
-    decompress(out, outmeta, out2)
+    decompress(out, outmeta, out2, check_after_decompress=False)
     t1 = time.perf_counter()
     rtc = t1 - t0
 
@@ -58,14 +59,15 @@ params = {
     'ds': {
         'title': 'dataset',
         'values': [
-            ('imec_385_10s.bin', 385, 3e4, 1.),
+            # ('imec_385_1s.bin', 385, 3e4, 1.),
             # ('imec_385_10s.bin', 385, 3e4, 10.),
+            ('imec_385_100s.bin', 385, 3e4, 100.),
             # ('pierre_10s.bin', 256, 2e4, 10.),
         ],
     },
     'n_threads': {
         'title': 'n_threads',
-        'values': [1, 2, 4, 8]
+        'values': [1, 4, 8]
     },
     # 'do_time_diff': {
     #     'title': 'time diff',

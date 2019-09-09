@@ -19,6 +19,7 @@ from pathlib import Path
 import sys
 import zlib
 
+from tqdm import tqdm
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -130,7 +131,7 @@ def diff_along_axis(chunk, axis=None):
     # The first row is the same (we need to keep the initial values in order to reconstruct
     # the original array from the diff).
     if axis == 0:
-        logger.debug("Performing time diff.")
+        logger.log(5, "Performing time diff.")
         chunkd = np.concatenate((chunk[0, :][np.newaxis, :], chunkd), axis=axis)
     elif axis == 1:
         logger.debug("Performing spatial diff.")
@@ -172,13 +173,15 @@ class Writer:
         Number of CPUs to use for compression. By default, use all of them.
     before_check : function
         A callback method that could be called just before the integrity check.
+    check_after_compress : bool
+        Whether to perform the automatic check after compression.
 
     """
     def __init__(
             self, chunk_duration=None, before_check=None,
             algorithm=None, comp_level=None,
             do_time_diff=None, do_spatial_diff=None,
-            n_threads=None,
+            n_threads=None, check_after_compress=None,
     ):
         self.chunk_duration = chunk_duration or DEFAULT_CHUNK_DURATION
         self.algorithm = algorithm or DEFAULT_ALGORITHM
@@ -189,6 +192,8 @@ class Writer:
             do_spatial_diff if do_spatial_diff is not None else DEFAULT_DO_SPATIAL_DIFF)
         self.n_threads = n_threads or DEFAULT_N_THREADS  # 1 means no multithreading
         self.before_check = before_check or (lambda x: None)
+        self.check_after_compress = (
+            check_after_compress if check_after_compress is not None else CHECK_AFTER_COMPRESS)
 
     def open(
             self, data_path, sample_rate=None, n_channels=None, dtype=None,
@@ -225,7 +230,8 @@ class Writer:
         assert self.n_samples > 0
         assert self.n_channels > 0
         assert n_channels == self.n_channels
-        logger.debug("Open %s with size %s.", data_path, self.data.shape)
+        duration = self.data.shape[0] / self.sample_rate
+        logger.info("Open %s, duration %.1fs, %d channels.", data_path, duration, self.n_channels)
         self._compute_chunk_bounds()
 
     def _compute_chunk_bounds(self):
@@ -240,7 +246,7 @@ class Writer:
         self.n_chunks = len(self.chunk_bounds) - 1
         assert self.chunk_bounds[0] == 0
         assert self.chunk_bounds[-1] == self.n_samples
-        logger.debug("Chunk bounds: %s", self.chunk_bounds)
+        logger.log(5, "Chunk bounds: %s", self.chunk_bounds)
         # Batches.
         self.batch_size = self.n_threads  # in each batch, there is 1 chunk per thread.
         self.n_batches = int(np.ceil(self.n_chunks / self.batch_size))
@@ -292,7 +298,7 @@ class Writer:
         elif not self.do_time_diff and self.do_spatial_diff:
             assert np.array_equal(chunkd[:, 0], chunk[:, 0])
         # Compress the diff.
-        logger.debug("Compressing %d MB...", (chunkd.size * chunk.itemsize) / 1024. ** 2)
+        logger.log(5, "Compressing %d MB...", (chunkd.size * chunk.itemsize) / 1024. ** 2)
         chunkdc = zlib.compress(chunkd.tobytes())
         ratio = 100 - 100 * len(chunkdc) / (chunk.size * chunk.itemsize)
         logger.debug("Chunk %d/%d: -%.3f%%.", chunk_idx + 1, self.n_chunks, ratio)
@@ -356,14 +362,15 @@ class Writer:
         self.chunk_offsets = [0]
         # Create the thread pool.
         self.pool = ThreadPool(self.batch_size)
+        logger.info("Starting compression on %d thread(s).", self.n_threads)
         with open(out, 'wb') as fb:
-            for batch in range(self.n_batches):
+            for batch in tqdm(range(self.n_batches), desc='Compressing'):
                 first_chunk = self.batch_size * batch  # first included
                 last_chunk = min(self.batch_size * (batch + 1), self.n_chunks)  # last excluded
                 assert 0 <= first_chunk < last_chunk <= self.n_chunks
                 logger.debug(
-                    "Processing batch #%d with chunks %s.",
-                    batch, ', '.join(map(str, range(first_chunk, last_chunk))))
+                    "Processing batch #%d/%d with chunks %s.",
+                    batch + 1, self.n_batches, ', '.join(map(str, range(first_chunk, last_chunk))))
                 # Compress all chunks in the batch.
                 compressed_chunks = self.compress_batch(first_chunk, last_chunk)
                 # Return a dictionary chunk_idx: compressed_buffer
@@ -385,12 +392,12 @@ class Writer:
         self.pool.join()
         # Compute the compression ratio.
         ratio = csize / self.file_size
-        logger.info("Wrote %s (-%.3f%%).", out, 100 - 100 * ratio)
+        logger.info("Wrote %s (%.1f GB, -%.3f%%).", out, csize / 1024 ** 3, 100 - 100 * ratio)
         # Write the metadata file.
         with open(outmeta, 'w') as f:
             json.dump(self.get_cmeta(), f, indent=2, sort_keys=True)
         # Check that the written file matches the original file (once decompressed).
-        if CHECK_AFTER_COMPRESS:
+        if self.check_after_compress:
             # Callback function before checking.
             self.before_check(self)
             try:
@@ -416,10 +423,15 @@ class Reader:
     cache_size : int
         Maximum number of chunks to keep in memory while reading. Every chunk kept in cache
         may take a few dozens of MB in RAM.
+    check_after_decompress : bool
+        Whether to perform the automatic check after decompression.
 
     """
-    def __init__(self, cache_size=None):
+    def __init__(self, cache_size=None, check_after_decompress=None):
         self.cache_size = cache_size if cache_size is not None else DEFAULT_CACHE_SIZE
+        self.check_after_decompress = (
+            check_after_decompress if check_after_decompress is not None
+            else CHECK_AFTER_DECOMPRESS)
 
     def open(self, cdata, cmeta):
         """Open a compressed data file.
@@ -524,9 +536,12 @@ class Reader:
         #     raise ValueError("The output file %s already exists." % out)
         # Read all chunks and save them to disk.
         with open(out, 'wb') as fb:
-            for chunk_idx, chunk_start, chunk_length in self.iter_chunks():
+            for chunk_idx, chunk_start, chunk_length in tqdm(
+                    self.iter_chunks(), desc='Decompressing', total=self.n_chunks):
                 self.read_chunk(chunk_idx, chunk_start, chunk_length).tofile(fb)
-        if CHECK_AFTER_DECOMPRESS:
+            dsize = fb.tell()
+        logger.info("Wrote %s (%.1f GB).", out, dsize / 1024 ** 3)
+        if self.check_after_decompress:
             decompressed = load_raw_data(out, n_channels=self.n_channels, dtype=self.dtype)
             check(decompressed, self.cdata, self.cmeta)
             logger.debug("Automatic integrity check after decompression PASSED.")
@@ -601,7 +616,8 @@ def check(data, out, outmeta):
     """Check that the compressed data matches the original array byte per byte."""
     unc = decompress(out, outmeta)
     # Read all chunks.
-    for chunk_idx, chunk_start, chunk_length in unc.iter_chunks():
+    for chunk_idx, chunk_start, chunk_length in tqdm(
+            unc.iter_chunks(), total=unc.n_chunks, desc='Checking'):
         chunk = unc.read_chunk(chunk_idx, chunk_start, chunk_length)
         # Find the corresponding chunk from the original data array.
         i0, i1 = unc.chunk_bounds[chunk_idx], unc.chunk_bounds[chunk_idx + 1]
@@ -623,7 +639,7 @@ def compress(
         sample_rate=None, n_channels=None, dtype=None,
         chunk_duration=None, algorithm=None,
         comp_level=None, do_time_diff=None, do_spatial_diff=None,
-        n_threads=None):
+        n_threads=None, check_after_compress=None):
     """Compress a NumPy-like array (may be memmapped) into a compressed format
     (two files, out and outmeta).
 
@@ -654,6 +670,8 @@ def compress(
         Whether to compute the spatial diff of the array before compressing.
     n_threads : int
         Number of CPUs to use for compression. By default, use all of them.
+    check_after_compress : bool
+        Whether to perform the automatic check after compression.
 
     Returns
     -------
@@ -690,6 +708,7 @@ def compress(
         do_time_diff=do_time_diff,
         do_spatial_diff=do_spatial_diff,
         n_threads=n_threads,
+        check_after_compress=check_after_compress,
     )
     w.open(path, sample_rate=sample_rate, n_channels=n_channels, dtype=dtype)
     length = w.write(out, outmeta)
@@ -697,7 +716,7 @@ def compress(
     return length
 
 
-def decompress(cdata, cmeta, out=None):
+def decompress(cdata, cmeta, out=None, check_after_decompress=None):
     """Read an array from a compressed dataset (two files, cdata and cmeta), and
     return a NumPy-like array (memmapping the compressed data file, and decompressing on the fly).
 
@@ -712,6 +731,8 @@ def decompress(cdata, cmeta, out=None):
         Path to the compression header JSON file.
     out : str or Path
         Path to the decompressed file to be written.
+    check_after_decompress : bool
+        Whether to perform the automatic check after decompression.
 
     Returns
     -------
@@ -722,7 +743,7 @@ def decompress(cdata, cmeta, out=None):
 
     """
 
-    r = Reader()
+    r = Reader(check_after_decompress=check_after_decompress)
     r.open(cdata, cmeta)
     if out:
         r.tofile(out)
@@ -751,7 +772,9 @@ def mtscomp_parse_args(args):
     parser.add_argument('-d', type=str, help='data type')
     parser.add_argument('-s', type=float, help='sample rate')
     parser.add_argument('-n', type=int, help='number of channels')
-    parser.add_argument('-c', type=int, help='number of CPUs to use')
+    parser.add_argument('-p', type=int, help='number of CPUs to use')
+    parser.add_argument('-c', type=int, help='chunk duration')
+    parser.add_argument('-nc', action='store_false', help='no check')
     parser.add_argument('-v', action='store_true', help='verbose')
 
     return parser.parse_args(args)
@@ -764,7 +787,7 @@ def mtscomp(args=None):
     compress(
         parser.path, parser.out, parser.outmeta,
         sample_rate=parser.s, n_channels=parser.n, dtype=np.dtype(parser.d),
-        n_threads=parser.c)
+        chunk_duration=parser.c, n_threads=parser.c, check_after_compress=parser.nc)
 
 
 #------------------------------------------------------------------------------
@@ -787,6 +810,8 @@ def mtsdecomp_parse_args(args):
         'out', type=str, nargs='?',
         help='path to the output decompressed file')
 
+    parser.add_argument('-nc', action='store_false', help='no check')
+
     return parser.parse_args(args)
 
 
@@ -794,7 +819,7 @@ def mtsdecomp(args=None):
     """Decompress a file."""
     add_default_handler('INFO')
     parser = mtsdecomp_parse_args(args or sys.argv[1:])
-    decompress(parser.cdata, parser.cmeta, parser.out)
+    decompress(parser.cdata, parser.cmeta, parser.out, check_after_decompress=parser.nc)
 
 
 #------------------------------------------------------------------------------
