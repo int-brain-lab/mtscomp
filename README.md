@@ -67,6 +67,9 @@ mtsdecomp data.cbin data.ch data_dec.bin
 ## High-level API
 
 ```python
+import numpy as np
+from mtscomp.mtscomp import compress, decompress
+
 # Compress a .bin file into a pair .cbin (compressed binary file) and .ch (JSON file).
 compress('data.bin', 'data.cbin', 'data.ch', sample_rate=20000., n_channels=256, dtype=np.uint16)
 # Decompress a pair (.cbin, .ch) and return an object that can be sliced like a NumPy array.
@@ -78,6 +81,9 @@ X = arr[start:end, :]  # decompress the data on the fly directly from the file o
 ## Low-level API
 
 ```python
+import numpy as np
+from mtscomp.mtscomp import Writer, Reader
+
 # Define a writer to compress a flat raw binary file.
 w = Writer(chunk_duration=1.)
 # Open the file to compress.
