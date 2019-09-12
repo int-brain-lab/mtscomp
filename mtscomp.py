@@ -41,6 +41,7 @@ DEFAULT_COMPRESSION_LEVEL = -1
 DEFAULT_DO_TIME_DIFF = True
 DEFAULT_DO_SPATIAL_DIFF = False  # benchmarks seem to show no compression performance benefits
 DEFAULT_CACHE_SIZE = 10  # number of chunks to keep in memory while reading the data
+DEFAULT_CHUNK_ORDER = 'F'
 DEFAULT_N_THREADS = mp.cpu_count()
 
 # Automatic checks when compressing/decompressing.
@@ -264,6 +265,7 @@ class Writer:
             'sample_rate': self.sample_rate,
             'chunk_bounds': self.chunk_bounds,
             'chunk_offsets': self.chunk_offsets,
+            'chunk_order': DEFAULT_CHUNK_ORDER,
         }
 
     def get_chunk(self, chunk_idx):
@@ -299,7 +301,8 @@ class Writer:
             assert np.array_equal(chunkd[:, 0], chunk[:, 0])
         # Compress the diff.
         logger.log(5, "Compressing %d MB...", (chunkd.size * chunk.itemsize) / 1024. ** 2)
-        chunkdc = zlib.compress(chunkd.tobytes())
+        # order=Fortran: Transposing (demultiplexing) the chunk may save a few %.
+        chunkdc = zlib.compress(chunkd.tobytes(order=DEFAULT_CHUNK_ORDER))
         ratio = 100 - 100 * len(chunkdc) / (chunk.size * chunk.itemsize)
         logger.debug("Chunk %d/%d: -%.3f%%.", chunk_idx + 1, self.n_chunks, ratio)
         return chunk_idx, chunkdc
@@ -491,12 +494,13 @@ class Reader:
         buffer = zlib.decompress(cbuffer)
         chunk = np.frombuffer(buffer, self.dtype)
         assert chunk.dtype == self.dtype
-        # Reshape the chunk.
+        # Find the chunk shape.
         i0, i1 = self.chunk_bounds[chunk_idx:chunk_idx + 2]
         assert i0 <= i1
         n_samples_chunk = i1 - i0
         assert chunk.size == n_samples_chunk * self.n_channels
-        chunk = chunk.reshape((n_samples_chunk, self.n_channels))
+        # Reshape the chunk.
+        chunk = chunk.reshape((n_samples_chunk, self.n_channels), order=DEFAULT_CHUNK_ORDER)
         chunki = cumsum_along_axis(chunk, axis=1 if self.cmeta.do_spatial_diff else None)
         chunki = cumsum_along_axis(chunki, axis=0 if self.cmeta.do_time_diff else None)
         assert chunki.dtype == chunk.dtype
