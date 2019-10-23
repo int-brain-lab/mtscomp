@@ -83,7 +83,7 @@ X = arr[start:end, :]  # decompress the data on the fly directly from the file o
 
 ```python
 import numpy as np
-from mtscomp.mtscomp import Writer, Reader
+from mtscomp import Writer, Reader
 
 # Define a writer to compress a flat raw binary file.
 w = Writer(chunk_duration=1.)
