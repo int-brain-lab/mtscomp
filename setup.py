@@ -8,23 +8,15 @@
 # Imports
 #------------------------------------------------------------------------------
 
-import os
 import os.path as op
 import re
 
-from setuptools import setup
+from setuptools import setup, find_packages
 
 
 #------------------------------------------------------------------------------
 # Setup
 #------------------------------------------------------------------------------
-
-def _package_tree(pkgroot):
-    path = op.dirname(__file__)
-    subdirs = [op.relpath(i[0], path).replace(op.sep, '.')
-               for i in os.walk(op.join(path, pkgroot))
-               if '__init__.py' in i[2]]
-    return subdirs
 
 
 curdir = op.dirname(op.realpath(__file__))
@@ -48,7 +40,8 @@ setup(
     author='Cyrille Rossant (International Brain Laboratory)',
     author_email='cyrille.rossant@gmail.com',
     url='https://github.com/int-brain-lab/mtscomp',
-    packages=_package_tree('mtscomp'),
+    py_modules=['mtscomp'],
+    packages=find_packages(),
     package_dir={'mtscomp': 'mtscomp'},
     package_data={
         'mtscomp': [],

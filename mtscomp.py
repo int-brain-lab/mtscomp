@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Global variables
 #------------------------------------------------------------------------------
 
-__version__ = '0.1.0a1'
+__version__ = '0.1.0b1'
 FORMAT_VERSION = '0.0'  # development
 
 __all__ = ('load_raw_data', 'Writer', 'Reader', 'compress', 'decompress')
