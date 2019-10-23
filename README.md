@@ -71,7 +71,7 @@ import numpy as np
 from mtscomp.mtscomp import compress, decompress
 
 # Compress a .bin file into a pair .cbin (compressed binary file) and .ch (JSON file).
-compress('data.bin', 'data.cbin', 'data.ch', sample_rate=20000., n_channels=256, dtype=np.uint16)
+compress('data.bin', 'data.cbin', 'data.ch', sample_rate=20000., n_channels=256, dtype=np.int16)
 # Decompress a pair (.cbin, .ch) and return an object that can be sliced like a NumPy array.
 arr = decompress('data.cbin', 'data.ch')
 X = arr[start:end, :]  # decompress the data on the fly directly from the file on disk
