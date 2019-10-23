@@ -50,6 +50,7 @@ For development only:
 ## Installation
 
 ```
+pip install mtscomp
 pip install git+https://github.com/int-brain-lab/mtscomp.git
 ```
 
