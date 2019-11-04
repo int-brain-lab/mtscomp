@@ -35,18 +35,19 @@ FORMAT_VERSION = '0.0'  # development
 __all__ = ('load_raw_data', 'Writer', 'Reader', 'compress', 'decompress')
 
 
-DEFAULT_CHUNK_DURATION = 1.  # in seconds
-DEFAULT_ALGORITHM = 'zlib'  # only algorithm supported currently
-DEFAULT_COMPRESSION_LEVEL = -1
-DEFAULT_DO_TIME_DIFF = True
-DEFAULT_DO_SPATIAL_DIFF = False  # benchmarks seem to show no compression performance benefits
-DEFAULT_CACHE_SIZE = 10  # number of chunks to keep in memory while reading the data
-DEFAULT_CHUNK_ORDER = 'F'
-DEFAULT_N_THREADS = mp.cpu_count()
+DEFAULT_CONFIG = list(dict(
+    algorithm='zlib',  # only algorithm supported currently
+    cache_size=10,  # number of chunks to keep in memory while reading the data
+    check_after_compress=True,  # check the integrity of the compressed file
+    check_after_decompress=True,  # check the integrity of the decompressed file saved to disk
+    chunk_duration=1.,  # in seconds
+    chunk_order='F',  # leads to slightly better compression than C order
+    comp_level=-1,  # zlib compression level
+    do_spatial_diff=False,  # benchmarks seem to show no compression performance benefits
+    do_time_diff=True,
+    n_threads=mp.cpu_count(),
+).items())  # convert to a list to ensure this dictionary is read-only
 
-# Automatic checks when compressing/decompressing.
-CHECK_AFTER_COMPRESS = True  # check the integrity of the compressed file
-CHECK_AFTER_DECOMPRESS = True  # check the integrity of the decompressed file saved to disk
 CHECK_ATOL = 1e-16  # tolerance for floating point array comparison check
 CRITICAL_ERROR_URL = \
     "https://github.com/int-brain-lab/mtscomp/issues/new?title=Critical+error"
@@ -151,6 +152,46 @@ def cumsum_along_axis(chunk, axis=None):
 
 
 #------------------------------------------------------------------------------
+# Config
+#------------------------------------------------------------------------------
+
+def config_path():
+    """Path to the configuration file."""
+    path = Path('~') / '.mtscomp'
+    path = path.expanduser()
+    return path
+
+
+CONFIG_PATH = config_path()
+
+
+def read_config(**kwargs):
+    """Return the configuration dictionary, with default values and values set by the user
+    in the configuration file."""
+    params = dict(DEFAULT_CONFIG)
+
+    if CONFIG_PATH.exists():
+        with CONFIG_PATH.open('r') as f:
+            user_config = json.load(f)
+    else:
+        user_config = {}
+    # Update the user defaults, then the values passed to the function.
+    # We only update non-None values.
+    for d in (user_config, kwargs):
+        params.update({k: v for k, v in d.items() if v is not None})
+    return Bunch(params)
+
+
+def write_config(**kwargs):
+    """Save some configuration key-values in the configuration file."""
+    config = read_config(**kwargs)
+    CONFIG_PATH.parent.mkdir(exist_ok=True, parents=True)
+    with CONFIG_PATH.open('w') as f:
+        json.dump(config, f, indent=2, sort_keys=True)
+    return config
+
+
+#------------------------------------------------------------------------------
 # Low-level API
 #------------------------------------------------------------------------------
 
@@ -178,23 +219,19 @@ class Writer:
         Whether to perform the automatic check after compression.
 
     """
-    def __init__(
-            self, chunk_duration=None, before_check=None,
-            algorithm=None, comp_level=None,
-            do_time_diff=None, do_spatial_diff=None,
-            n_threads=None, check_after_compress=None,
-    ):
-        self.chunk_duration = chunk_duration or DEFAULT_CHUNK_DURATION
-        self.algorithm = algorithm or DEFAULT_ALGORITHM
+    def __init__(self, before_check=None, **kwargs):
+        config = read_config(**kwargs)
+        self.config = config
+        self.chunk_duration = config.chunk_duration
+        self.algorithm = config.algorithm
         assert self.algorithm == 'zlib', "Only zlib is currently supported."
-        self.comp_level = comp_level if comp_level is not None else DEFAULT_COMPRESSION_LEVEL
-        self.do_time_diff = do_time_diff if do_time_diff is not None else DEFAULT_DO_TIME_DIFF
-        self.do_spatial_diff = (
-            do_spatial_diff if do_spatial_diff is not None else DEFAULT_DO_SPATIAL_DIFF)
-        self.n_threads = n_threads or DEFAULT_N_THREADS  # 1 means no multithreading
+        self.comp_level = config.comp_level
+        self.do_time_diff = config.do_time_diff
+        self.do_spatial_diff = config.do_spatial_diff
+        self.n_threads = config.n_threads
         self.before_check = before_check or (lambda x: None)
-        self.check_after_compress = (
-            check_after_compress if check_after_compress is not None else CHECK_AFTER_COMPRESS)
+        self.check_after_compress = config.check_after_compress
+        self.chunk_order = config.chunk_order
 
     def open(
             self, data_path, sample_rate=None, n_channels=None, dtype=None,
@@ -219,12 +256,23 @@ class Writer:
             Whether the data should be memmapped.
 
         """
+        # Get default parameters from the config file, if it exists.
+        sample_rate = sample_rate or self.config.get('sample_rate', None)
+        if not sample_rate:
+            raise ValueError("Please provide a sample rate.")
+        n_channels = n_channels or self.config.get('n_channels', None)
+        if not n_channels:
+            raise ValueError("Please provide n_channels.")
+        dtype = dtype or self.config.get('dtype', None)
+        if not dtype:
+            raise ValueError("Please provide a dtype.")
+
         self.sample_rate = sample_rate
         assert sample_rate > 0
         assert n_channels > 0
-        self.dtype = dtype
+        self.dtype = np.dtype(dtype)
         self.data_path = Path(data_path)
-        self.data = load_raw_data(data_path, n_channels=n_channels, dtype=dtype)
+        self.data = load_raw_data(data_path, n_channels=n_channels, dtype=self.dtype)
         self.file_size = self.data.size * self.data.itemsize
         assert self.data.ndim == 2
         self.n_samples, self.n_channels = self.data.shape
@@ -232,7 +280,8 @@ class Writer:
         assert self.n_channels > 0
         assert n_channels == self.n_channels
         duration = self.data.shape[0] / self.sample_rate
-        logger.info("Open %s, duration %.1fs, %d channels.", data_path, duration, self.n_channels)
+        logger.info(
+            "Opening %s, duration %.1fs, %d channels.", data_path, duration, self.n_channels)
         self._compute_chunk_bounds()
 
     def _compute_chunk_bounds(self):
@@ -265,7 +314,7 @@ class Writer:
             'sample_rate': self.sample_rate,
             'chunk_bounds': self.chunk_bounds,
             'chunk_offsets': self.chunk_offsets,
-            'chunk_order': DEFAULT_CHUNK_ORDER,
+            'chunk_order': self.chunk_order,
         }
 
     def get_chunk(self, chunk_idx):
@@ -302,7 +351,7 @@ class Writer:
         # Compress the diff.
         logger.log(5, "Compressing %d MB...", (chunkd.size * chunk.itemsize) / 1024. ** 2)
         # order=Fortran: Transposing (demultiplexing) the chunk may save a few %.
-        chunkdc = zlib.compress(chunkd.tobytes(order=DEFAULT_CHUNK_ORDER))
+        chunkdc = zlib.compress(chunkd.tobytes(order=self.chunk_order))
         ratio = 100 - 100 * len(chunkdc) / (chunk.size * chunk.itemsize)
         logger.debug("Chunk %d/%d: -%.3f%%.", chunk_idx + 1, self.n_chunks, ratio)
         return chunk_idx, chunkdc
@@ -365,7 +414,9 @@ class Writer:
         self.chunk_offsets = [0]
         # Create the thread pool.
         self.pool = ThreadPool(self.batch_size)
-        logger.info("Starting compression on %d thread(s).", self.n_threads)
+        logger.debug('\n'.join('%s = %s' % (k, v) for (k, v) in self.config.items()))
+        ts = ' on %d CPUs.' % self.n_threads if self.n_threads > 1 else '.'
+        logger.info("Starting compression" + ts)
         with open(out, 'wb') as fb:
             for batch in tqdm(range(self.n_batches), desc='Compressing'):
                 first_chunk = self.batch_size * batch  # first included
@@ -430,11 +481,10 @@ class Reader:
         Whether to perform the automatic check after decompression.
 
     """
-    def __init__(self, cache_size=None, check_after_decompress=None):
-        self.cache_size = cache_size if cache_size is not None else DEFAULT_CACHE_SIZE
-        self.check_after_decompress = (
-            check_after_decompress if check_after_decompress is not None
-            else CHECK_AFTER_DECOMPRESS)
+    def __init__(self, **kwargs):
+        self.config = read_config(**kwargs)
+        self.cache_size = self.config.cache_size
+        self.check_after_decompress = self.config.check_after_decompress
 
     def open(self, cdata, cmeta):
         """Open a compressed data file.
@@ -449,6 +499,8 @@ class Reader:
 
         """
         # Read metadata file.
+        if cmeta is None:
+            cmeta = Path(cdata).with_suffix('.ch')
         if not isinstance(cmeta, dict):
             with open(cmeta, 'r') as f:
                 cmeta = json.load(f)
@@ -459,6 +511,7 @@ class Reader:
         self.dtype = np.dtype(self.cmeta.dtype)
         self.chunk_offsets = self.cmeta.chunk_offsets
         self.chunk_bounds = self.cmeta.chunk_bounds
+        self.chunk_order = self.cmeta.chunk_order
         self.n_samples = self.chunk_bounds[-1]
         self.n_chunks = len(self.chunk_bounds) - 1
         self.shape = (self.n_samples, self.n_channels)
@@ -500,7 +553,7 @@ class Reader:
         n_samples_chunk = i1 - i0
         assert chunk.size == n_samples_chunk * self.n_channels
         # Reshape the chunk.
-        chunk = chunk.reshape((n_samples_chunk, self.n_channels), order=DEFAULT_CHUNK_ORDER)
+        chunk = chunk.reshape((n_samples_chunk, self.n_channels), order=self.chunk_order)
         chunki = cumsum_along_axis(chunk, axis=1 if self.cmeta.do_spatial_diff else None)
         chunki = cumsum_along_axis(chunki, axis=0 if self.cmeta.do_time_diff else None)
         assert chunki.dtype == chunk.dtype
@@ -639,11 +692,7 @@ def check(data, out, outmeta):
 
 
 def compress(
-        path, out=None, outmeta=None,
-        sample_rate=None, n_channels=None, dtype=None,
-        chunk_duration=None, algorithm=None,
-        comp_level=None, do_time_diff=None, do_spatial_diff=None,
-        n_threads=None, check_after_compress=None):
+        path, out=None, outmeta=None, sample_rate=None, n_channels=None, dtype=None, **kwargs):
     """Compress a NumPy-like array (may be memmapped) into a compressed format
     (two files, out and outmeta).
 
@@ -705,15 +754,7 @@ def compress(
 
     """
 
-    w = Writer(
-        chunk_duration=chunk_duration,
-        algorithm=algorithm,
-        comp_level=comp_level,
-        do_time_diff=do_time_diff,
-        do_spatial_diff=do_spatial_diff,
-        n_threads=n_threads,
-        check_after_compress=check_after_compress,
-    )
+    w = Writer(**kwargs)
     w.open(path, sample_rate=sample_rate, n_channels=n_channels, dtype=dtype)
     length = w.write(out, outmeta)
     w.close()
@@ -758,7 +799,34 @@ def decompress(cdata, cmeta, out=None, check_after_decompress=None):
 # Command-line API: mtscomp
 #------------------------------------------------------------------------------
 
-def mtscomp_parse_args(args):
+def _shared_options(parser):
+    parser.add_argument('-nc', action='store_false', help='no check')
+    parser.add_argument('-v', '--debug', action='store_true', help='verbose')
+
+
+def _args_to_config(parser, args, compress=True):
+    pargs = parser.parse_args(args)
+    # parser.nc=True means that the flag was not given => switch to default (True or config)
+    check_after = None if pargs.nc is True else False
+    kwargs = {}
+    if compress:
+        kwargs.update(
+            sample_rate=pargs.s,
+            n_channels=pargs.n,
+            dtype=pargs.d.strip() if pargs.d else pargs.d,
+            chunk_duration=pargs.c,
+            n_threads=pargs.p,
+            check_after_compress=check_after,
+        )
+    else:
+        kwargs.update(
+            check_after_decompress=check_after,
+        )
+    config = read_config(**kwargs)
+    return pargs, config
+
+
+def mtscomp_parser():
     """Command-line interface to compress a file."""
     parser = argparse.ArgumentParser(description='Compress a raw binary file.')
 
@@ -778,27 +846,31 @@ def mtscomp_parse_args(args):
     parser.add_argument('-n', type=int, help='number of channels')
     parser.add_argument('-p', type=int, help='number of CPUs to use')
     parser.add_argument('-c', type=int, help='chunk duration')
-    parser.add_argument('-nc', action='store_false', help='no check')
-    parser.add_argument('-v', action='store_true', help='verbose')
 
-    return parser.parse_args(args)
+    _shared_options(parser)
+
+    parser.add_argument(
+        '--set-default', action='store_true', help='set the specified parameters as the default')
+
+    return parser
 
 
 def mtscomp(args=None):
     """Compress a file."""
-    parser = mtscomp_parse_args(args or sys.argv[1:])
-    add_default_handler('DEBUG' if parser.v else 'INFO')
-    compress(
-        parser.path, parser.out, parser.outmeta,
-        sample_rate=parser.s, n_channels=parser.n, dtype=np.dtype(parser.d),
-        chunk_duration=parser.c, n_threads=parser.c, check_after_compress=parser.nc)
+    parser = mtscomp_parser()
+    pargs, config = _args_to_config(
+        parser, args or sys.argv[1:], compress=True)
+    add_default_handler('DEBUG' if pargs.debug else 'INFO')
+    if pargs.set_default:
+        write_config(**config)
+    compress(pargs.path, pargs.out, pargs.outmeta, **config)
 
 
 #------------------------------------------------------------------------------
 # Command-line API: mtsdecomp
 #------------------------------------------------------------------------------
 
-def mtsdecomp_parse_args(args):
+def mtsdecomp_parser():
     """Command-line interface to decompress a file."""
     parser = argparse.ArgumentParser(description='Decompress a raw binary file.')
 
@@ -807,23 +879,27 @@ def mtsdecomp_parse_args(args):
         help='path to the input compressed binary file')
 
     parser.add_argument(
-        'cmeta', type=str,
+        'cmeta', type=str, nargs='?',
         help='path to the input compression metadata file')
 
     parser.add_argument(
         'out', type=str, nargs='?',
         help='path to the output decompressed file')
 
-    parser.add_argument('-nc', action='store_false', help='no check')
+    _shared_options(parser)
 
-    return parser.parse_args(args)
+    return parser
 
 
 def mtsdecomp(args=None):
     """Decompress a file."""
-    add_default_handler('INFO')
-    parser = mtsdecomp_parse_args(args or sys.argv[1:])
-    decompress(parser.cdata, parser.cmeta, parser.out, check_after_decompress=parser.nc)
+    parser = mtsdecomp_parser()
+    pargs, config = _args_to_config(parser, args or sys.argv[1:], compress=False)
+    add_default_handler('DEBUG' if pargs.debug else 'INFO')
+    decompress(
+        pargs.cdata, pargs.cmeta, pargs.out,
+        check_after_decompress=config.check_after_compress,
+    )
 
 
 #------------------------------------------------------------------------------
@@ -832,9 +908,10 @@ def mtsdecomp(args=None):
 
 def mtsdesc(args=None):
     """Describe a compressed file."""
-    parser = mtsdecomp_parse_args(args or sys.argv[1:])
+    parser = mtsdecomp_parser()
+    pargs = parser.parse_args(args or sys.argv[1:])
     r = Reader()
-    r.open(parser.cdata, parser.cmeta)
+    r.open(pargs.cdata, pargs.cmeta)
     sr = float(r.cmeta.sample_rate)
     info = dict(
         dtype=r.dtype,

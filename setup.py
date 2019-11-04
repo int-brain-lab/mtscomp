@@ -18,7 +18,6 @@ from setuptools import setup, find_packages
 # Setup
 #------------------------------------------------------------------------------
 
-
 curdir = op.dirname(op.realpath(__file__))
 with open(op.join(curdir, 'README.md')) as f:
     readme = f.read()

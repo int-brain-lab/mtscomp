@@ -14,13 +14,14 @@ import logging
 import os
 from pathlib import Path
 import re
-from time import sleep
 
 import numpy as np
 from pytest import fixture, raises, mark
 
+import mtscomp as mtscomp_mod
 from mtscomp import (
     add_default_handler, Writer, Reader, load_raw_data, diff_along_axis, cumsum_along_axis,
+    mtscomp_parser, mtsdecomp_parser, _args_to_config, read_config,
     compress, decompress, mtsdesc, mtscomp, mtsdecomp,
     CHECK_ATOL)
 
@@ -47,12 +48,19 @@ add_default_handler('DEBUG')
 #------------------------------------------------------------------------------
 
 @fixture
-def path(tmp_path):
-    return Path(tmp_path) / 'data.bin'
+def tmp_path_(tmp_path):
+    # HACK: do not use user config path in tests
+    mtscomp_mod.CONFIG_PATH = tmp_path / '.mtscomp'
+    return tmp_path
+
+
+@fixture
+def path(tmp_path_):
+    return Path(tmp_path_) / 'data.bin'
 
 
 def zeros():
-    return np.zeros((n_samples, n_channels))
+    return np.zeros((n_samples, n_channels), dtype=np.float32)
 
 
 def randn():
@@ -121,6 +129,7 @@ def _round_trip(path, arr, **ckwargs):
     outmeta = path.parent / 'data.ch'
     compress(
         path, out, outmeta, sample_rate=sample_rate, n_channels=arr.shape[1],
+
         dtype=arr.dtype, **ckwargs)
     unc = decompress(out, outmeta)
     assert np.allclose(unc[:], arr)
@@ -130,6 +139,15 @@ def _round_trip(path, arr, **ckwargs):
 #------------------------------------------------------------------------------
 # Misc tests
 #------------------------------------------------------------------------------
+
+def test_config_1(tmp_path_):
+    """Test default options/"""
+    config = read_config()
+    assert config.check_after_compress
+    assert config.check_after_decompress
+    assert config.do_time_diff
+    assert not config.do_spatial_diff
+
 
 def test_load_raw_data(path):
     arrs = [
@@ -297,7 +315,8 @@ def test_comp_decomp(path):
     out = path.parent / 'data.cbin'
     outmeta = path.parent / 'data.ch'
     compress(
-        path, out, outmeta, sample_rate=sample_rate, n_channels=arr.shape[1], dtype=arr.dtype)
+        path, out, outmeta, sample_rate=sample_rate, n_channels=arr.shape[1], dtype=arr.dtype,
+    )
     decompressed_path = path.with_suffix('.decomp.bin')
     decompress(out, outmeta, decompressed_path)
 
@@ -334,7 +353,7 @@ def test_n_channels(path, ns, nc):
 @mark.parametrize('comp_level', [1, 6, 9])
 def test_comp_levels_do_diff(path, arr, comp_level, do_time_diff, do_spatial_diff):
     _round_trip(
-        path, arr, comp_level=comp_level,
+        path, arr, compression_level=comp_level,
         do_time_diff=do_time_diff, do_spatial_diff=do_spatial_diff)
 
 
@@ -346,6 +365,52 @@ def test_n_threads(path, arr, n_threads):
 #------------------------------------------------------------------------------
 # CLI tests
 #------------------------------------------------------------------------------
+
+def test_cliargs_0(tmp_path_):
+    """Test default parameters."""
+    parser = mtscomp_parser()
+
+    args = ['somefile']
+    pargs, config = _args_to_config(parser, args)
+    assert config.algorithm == 'zlib'
+    assert config.check_after_compress
+    assert config.check_after_decompress
+    assert config.do_time_diff
+    assert not config.do_spatial_diff
+
+    pargs, config = _args_to_config(parser, args + ['-p 3'])
+    assert config.n_threads == 3
+    assert config.check_after_compress
+    assert config.check_after_decompress
+
+    pargs, config = _args_to_config(parser, args + ['-c 2', '-s 10000', '-n 123', '-d uint8'])
+    assert config.chunk_duration == 2
+    assert config.sample_rate == 10000
+    assert config.n_channels == 123
+    assert config.dtype == 'uint8'
+    assert config.check_after_compress
+    assert config.check_after_decompress
+    assert not pargs.debug
+
+    pargs, config = _args_to_config(parser, args + ['-c 2', '-nc', '--debug'])
+    assert not config.check_after_compress
+    assert config.check_after_decompress
+    assert pargs.debug
+
+
+def test_cliargs_1(tmp_path_):
+    """Test default parameters."""
+    parser = mtsdecomp_parser()
+
+    args = ['somefile']
+    pargs, config = _args_to_config(parser, args, compress=False)
+    assert config.check_after_compress
+    assert config.check_after_decompress
+
+    pargs, config = _args_to_config(parser, args + ['-nc'], compress=False)
+    assert config.check_after_compress
+    assert not config.check_after_decompress
+
 
 def test_cli_1(path, arr):
     _write_arr(path, arr)
@@ -372,3 +437,32 @@ def test_cli_1(path, arr):
 
     # Check that the decompressed and original arrays match.
     np.allclose(decompressed, arr)
+
+
+def test_cli_2(path, arr):
+    _write_arr(path, arr)
+    parser = mtscomp_parser()
+    args = [
+        str(path), '-d', str(arr.dtype), '-s', str(sample_rate), '-n', str(arr.shape[1]),
+        '-nc']
+
+    # Error raised if params are not given.
+    with raises(ValueError):
+        mtscomp(args[:1])
+    mtscomp(args)
+    with raises(ValueError):
+        mtscomp(args[:1] + args[3:])
+
+    # Now, we use --set-default
+    mtscomp(args + ['--set-default'])
+    # This call should not fail this time.
+    mtscomp(args[:1])
+
+    # Check the saved default config.
+    pargs, config = _args_to_config(parser, args[:1])
+    assert config.dtype == str(arr.dtype)
+    assert config.check_after_compress is False
+    assert config.n_channels == 19
+    assert config.sample_rate == 1234
+
+    mtsdecomp([str(path.with_suffix('.cbin'))])
