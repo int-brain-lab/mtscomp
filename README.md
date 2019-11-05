@@ -23,12 +23,14 @@ The compression scheme is the following:
 * The data is split into chunks along the time axis.
 * The time differences are computed for all channels.
 * These time differences are compressed with zlib.
-* The compressed chunks are appended in a binary file.
+* The compressed chunks (and initial values of each chunk) are appended in a binary file.
 * Metadata about the compression, including the chunk offsets within the compressed binary file, are saved in a secondary JSON file.
 
 Saving the offsets allows for on-the-fly decompression and random data access: one simply has to determine which chunks should be loaded, and load them directly from the compressed binary file. The compressed chunks are decompressed with zlib, and the original data is recovered with a cumulative sum (the inverse of the time difference operation).
 
-With large-scale neurophysiological recordings, a compression ration of 3x could be obtained.
+With large-scale neurophysiological recordings, we achieved a compression ratio of 3x.
+
+As a consistency check, the compressed file is by default automatically and transparently decompressed and compared to the original file on a byte-per-byte basis.
 
 
 ## Dependencies
@@ -49,21 +51,74 @@ For development only:
 
 ```
 pip install mtscomp
-pip install git+https://github.com/int-brain-lab/mtscomp.git
 ```
 
 
-## Command-line
+## Command-line interface
+
+Example:
 
 ```bash
-# Compression: specify the number of channels, sample rate, dtype
-mtscomp data.bin data.cbin cdata.ch -n 385 -s 30000 -d uint16
+# Compression: specify the number of channels, sample rate, dtype, optionally save the parameters
+# as default in ~/.mtscomp with --set-default
+mtscomp data.bin -n 385 -s 30000 -d int16 [--set-default]
 # Decompression
-mtsdecomp data.cbin data.ch data_dec.bin
+mtsdecomp data.cbin -o data.decomp.bin
+```
+
+Usage:
+
+```
+usage: mtscomp [-h] [-d DTYPE] [-s SAMPLE_RATE] [-n N_CHANNELS] [-p CPUS]
+               [-c CHUNK] [-nc] [-v] [--set-default]
+               path [out] [outmeta]
+
+Compress a raw binary file.
+
+positional arguments:
+  path                  input path of a raw binary file
+  out                   output path of the compressed binary file (.cbin)
+  outmeta               output path of the compression metadata JSON file
+                        (.ch)
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -d DTYPE, --dtype DTYPE
+                        data type
+  -s SAMPLE_RATE, --sample-rate SAMPLE_RATE
+                        sample rate
+  -n N_CHANNELS, --n-channels N_CHANNELS
+                        number of channels
+  -p CPUS, --cpus CPUS  number of CPUs to use
+  -c CHUNK, --chunk CHUNK
+                        chunk duration
+  -nc, --no-check       no check
+  -v, --debug           verbose
+  --set-default         set the specified parameters as the default
+
+
+
+usage: mtsdecomp [-h] [-o [OUT]] [--overwrite] [-nc] [-v] cdata [cmeta]
+
+Decompress a raw binary file.
+
+positional arguments:
+  cdata                 path to the input compressed binary file (.cbin)
+  cmeta                 path to the input compression metadata JSON file (.ch)
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -o [OUT], --out [OUT]
+                        path to the output decompressed file (.bin)
+  --overwrite, -f       overwrite existing output
+  -nc, --no-check       no check
+  -v, --debug           verbose
 ```
 
 
 ## High-level API
+
+Example:
 
 ```python
 import numpy as np
@@ -79,6 +134,8 @@ X = arr[start:end, :]  # decompress the data on the fly directly from the file o
 
 ## Low-level API
 
+Example:
+
 ```python
 import numpy as np
 from mtscomp import Writer, Reader
@@ -86,7 +143,7 @@ from mtscomp import Writer, Reader
 # Define a writer to compress a flat raw binary file.
 w = Writer(chunk_duration=1.)
 # Open the file to compress.
-w.open('data.bin', sample_rate=20000., n_channels=256, dtype=np.uint16)
+w.open('data.bin', sample_rate=20000., n_channels=256, dtype=np.int16)
 # Compress it into a compressed binary file, and a JSON header file.
 w.write('data.cbin', 'data.ch')
 w.close()
@@ -112,9 +169,8 @@ r.close()
 
 ## Performance
 
-Preliminary benchmarks on an Neuropixels dataset (30 kHz, 385 channels) and Intel(R) Core(TM) i7-6700K CPU @ 4.00GHz:
+Performance on an Neuropixels dataset (30 kHz, 385 channels) and Intel 10-core i9-9820X CPU @ 3.3GHz:
 
 * Compression ratio: -63% (compressed files are nearly 3x smaller)
-* Compression write time (single-threaded): 10 MB/s, 2x slower than real time
-* Compression write time (8 threads): 3-5x faster than single-threaded
-* Compression read time (single-threaded): 24 MB/s, 30x slower than uncompressed, 3x faster than real time
+* Compression time (20 threads): 88 MB/s, **4x faster than real time**
+* Decompression time (single-threaded at the moment): 22 MB/s, **3x faster than real time**
