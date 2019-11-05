@@ -466,3 +466,35 @@ def test_cli_2(path, arr):
     assert config.sample_rate == 1234
 
     mtsdecomp([str(path.with_suffix('.cbin'))])
+
+    # Test override of a parameter despite set_default.
+    pargs, config = _args_to_config(parser, args[:1] + ['-s 100'])
+    assert config.sample_rate == 100
+
+
+def test_cli_3(path, arr):
+    _write_arr(path, arr)
+    parser = mtscomp_parser()
+    args = [str(path), '-d', str(arr.dtype), '-s', str(sample_rate)]
+
+    # Error raised if params are not given.
+    with raises(ValueError):
+        mtscomp(args)
+    with raises(ValueError):
+        mtscomp(args[:1] + ['-n', '19'])
+
+    # Now, we use --set-default
+    with raises(ValueError):
+        mtscomp(args + ['--set-default'])
+    # This should still fail.
+    with raises(ValueError):
+        mtscomp(args[:1])
+    # Should not fail
+    mtscomp(args[:1] + ['-n', '19'])
+
+    # Check the saved default config.
+    pargs, config = _args_to_config(parser, args[:1])
+    assert config.dtype == str(arr.dtype)
+    assert config.check_after_compress is True
+    assert config.get('n_channels', None) is None
+    assert config.sample_rate == 1234
