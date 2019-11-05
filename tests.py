@@ -294,8 +294,12 @@ def test_check_fail(path, arr):
         writer.close()
         # Then, we change one byte in it.
         f_size = op.getsize(path)
+        # WARNING: must open in r+b mode in order to modify bytes in-place in the middle of
+        # the file.
         with open(str(path), 'r+b') as f:
             f.seek(f_size // 2)
+            # Also, it's better to change multiple bytes at the same time to be sure that
+            # the underlying number (e.g. float64) is fully modified.
             f.write(os.urandom(8))
         assert not np.allclose(np.fromfile(path, dtype=arr.dtype), arr.ravel())
         # The file size should be the same, although one byte has been changed.
