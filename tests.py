@@ -322,7 +322,7 @@ def test_comp_decomp(path):
         path, out, outmeta, sample_rate=sample_rate, n_channels=arr.shape[1], dtype=arr.dtype,
     )
     decompressed_path = path.with_suffix('.decomp.bin')
-    decompress(out, outmeta, decompressed_path)
+    decompress(out, outmeta, out=decompressed_path)
 
     # Check the files are equal.
     with open(str(path), 'rb') as f:
@@ -422,6 +422,11 @@ def test_cli_1(path, arr):
     outmeta = path.parent / 'data.ch'
     path2 = path.parent / 'data2.bin'
 
+    with raises(ValueError):
+        # Wrong number of channels: should raise an error because the file size is not a
+        # multiple of that wrong number of channels.
+        mtscomp([
+            str(path), '-d', str(arr.dtype), '-s', str(sample_rate), '-n', str(arr.shape[1] + 1)])
     # Compress.
     mtscomp([str(path), '-d', str(arr.dtype), '-s', str(sample_rate), '-n', str(arr.shape[1])])
 
@@ -434,7 +439,7 @@ def test_cli_1(path, arr):
     nc = int(re.search(r'n_channels[ ]+([0-9]+)', desc).group(1))
 
     # Decompress.
-    mtsdecomp([str(out), str(outmeta), str(path2)])
+    mtsdecomp([str(out), str(outmeta), '-o', str(path2)])
 
     # Extract n_channels and dtype from the description.
     decompressed = load_raw_data(path=path2, n_channels=nc, dtype=dt)
@@ -452,7 +457,7 @@ def test_cli_2(path, arr):
 
     # Error raised if params are not given.
     with raises(ValueError):
-        mtscomp(args[:1])
+        mtscomp(args[:1] + ['--debug'])
     mtscomp(args)
     with raises(ValueError):
         mtscomp(args[:1] + args[3:])
@@ -469,7 +474,7 @@ def test_cli_2(path, arr):
     assert config.n_channels == 19
     assert config.sample_rate == 1234
 
-    mtsdecomp([str(path.with_suffix('.cbin'))])
+    mtsdecomp([str(path.with_suffix('.cbin')), '-f', '--debug'])
 
     # Test override of a parameter despite set_default.
     pargs, config = _args_to_config(parser, args[:1] + ['-s 100'])

@@ -19,6 +19,8 @@ from pathlib import Path
 import sys
 import zlib
 
+# import traceback
+
 from tqdm import tqdm
 import numpy as np
 
@@ -29,8 +31,8 @@ logger = logging.getLogger(__name__)
 # Global variables
 #------------------------------------------------------------------------------
 
-__version__ = '0.1.0b1'
-FORMAT_VERSION = '0.0'  # development
+__version__ = '1.0.0b1'
+FORMAT_VERSION = '1.0'
 
 __all__ = ('load_raw_data', 'Writer', 'Reader', 'compress', 'decompress')
 
@@ -108,8 +110,13 @@ def load_raw_data(path=None, n_channels=None, dtype=None, offset=None, mmap=True
     # Compute the array shape.
     item_size = np.dtype(dtype).itemsize
     offset = offset or 0
-    n_samples = (op.getsize(str(path)) - offset) // (item_size * n_channels)
+    f_size = op.getsize(str(path))
+    n_samples = (f_size - offset) // (item_size * n_channels)
     size = n_samples * n_channels
+    if size * item_size != (f_size - offset):
+        raise ValueError(
+            ("The file size (%d bytes) is incompatible with the specified parameters " % f_size) +
+            ("(n_channels=%d, dtype=%s, offset=%d)" % (n_channels, dtype, offset)))
     if size == 0:
         return np.zeros((0, n_channels), dtype=dtype)
     shape = (n_samples, n_channels)
@@ -259,13 +266,13 @@ class Writer:
         # Get default parameters from the config file, if it exists.
         sample_rate = sample_rate or self.config.get('sample_rate', None)
         if not sample_rate:
-            raise ValueError("Please provide a sample rate.")
+            raise ValueError("Please provide a sample rate (-s option in the command-line).")
         n_channels = n_channels or self.config.get('n_channels', None)
         if not n_channels:
-            raise ValueError("Please provide n_channels.")
+            raise ValueError("Please provide n_channels (-n option in the command-line).")
         dtype = dtype or self.config.get('dtype', None)
         if not dtype:
-            raise ValueError("Please provide a dtype.")
+            raise ValueError("Please provide a dtype (-d option in the command-line).")
 
         self.sample_rate = sample_rate
         assert sample_rate > 0
@@ -586,11 +593,15 @@ class Reader:
         assert 0 <= first_chunk <= last_chunk <= self.n_chunks - 1
         return first_chunk, last_chunk
 
-    def tofile(self, out):
+    def tofile(self, out, overwrite=False):
         """Write the decompressed array to disk."""
+        if out is None:
+            out = Path(self.cdata.name).with_suffix('.bin')
         out = Path(out)
-        # if out.exists():  # pragma: no cover
-        #     raise ValueError("The output file %s already exists." % out)
+        if not overwrite and out.exists():  # pragma: no cover
+            raise ValueError(
+                "The output file %s already exists, use --overwrite or specify another "
+                "output path." % out)
         # Read all chunks and save them to disk.
         with open(out, 'wb') as fb:
             for chunk_idx, chunk_start, chunk_length in tqdm(
@@ -761,7 +772,8 @@ def compress(
     return length
 
 
-def decompress(cdata, cmeta, out=None, check_after_decompress=None):
+def decompress(
+        cdata, cmeta, out=None, check_after_decompress=None, write_output=False, overwrite=False):
     """Read an array from a compressed dataset (two files, cdata and cmeta), and
     return a NumPy-like array (memmapping the compressed data file, and decompressing on the fly).
 
@@ -778,6 +790,10 @@ def decompress(cdata, cmeta, out=None, check_after_decompress=None):
         Path to the decompressed file to be written.
     check_after_decompress : bool
         Whether to perform the automatic check after decompression.
+    write_output : bool
+        Whether to write the output to a file.
+    overwrite : bool
+        Whether to overwrite the output file if it already exists.
 
     Returns
     -------
@@ -787,35 +803,44 @@ def decompress(cdata, cmeta, out=None, check_after_decompress=None):
         parts of the actual data as NumPy arrays.
 
     """
-
+    if out:
+        write_output = True
     r = Reader(check_after_decompress=check_after_decompress)
     r.open(cdata, cmeta)
-    if out:
-        r.tofile(out)
+    if write_output:
+        r.tofile(out, overwrite=overwrite)
     return r
 
 
 #------------------------------------------------------------------------------
-# Command-line API: mtscomp
+# Command-line API utils
 #------------------------------------------------------------------------------
 
+def exception_handler(
+        exception_type, exception, traceback, debug_hook=sys.excepthook):  # pragma: no cover
+    if '--debug' in sys.argv or '-v' in sys.argv:
+        debug_hook(exception_type, exception, traceback)
+    else:
+        print("%s: %s" % (exception_type.__name__, exception))
+
+
 def _shared_options(parser):
-    parser.add_argument('-nc', action='store_false', help='no check')
+    parser.add_argument('-nc', '--no-check', action='store_false', help='no check')
     parser.add_argument('-v', '--debug', action='store_true', help='verbose')
 
 
 def _args_to_config(parser, args, compress=True):
     pargs = parser.parse_args(args)
     # parser.nc=True means that the flag was not given => switch to default (True or config)
-    check_after = None if pargs.nc is True else False
+    check_after = None if pargs.no_check is True else False
     kwargs = {}
     if compress:
         kwargs.update(
-            sample_rate=pargs.s,
-            n_channels=pargs.n,
-            dtype=pargs.d.strip() if pargs.d else pargs.d,
-            chunk_duration=pargs.c,
-            n_threads=pargs.p,
+            sample_rate=pargs.sample_rate,
+            n_channels=pargs.n_channels,
+            dtype=pargs.dtype.strip() if pargs.dtype else pargs.dtype,
+            chunk_duration=pargs.chunk,
+            n_threads=pargs.cpus,
             check_after_compress=check_after,
         )
     else:
@@ -826,6 +851,10 @@ def _args_to_config(parser, args, compress=True):
     return pargs, config
 
 
+#------------------------------------------------------------------------------
+# Command-line API: mtscomp
+#------------------------------------------------------------------------------
+
 def mtscomp_parser():
     """Command-line interface to compress a file."""
     parser = argparse.ArgumentParser(description='Compress a raw binary file.')
@@ -835,17 +864,17 @@ def mtscomp_parser():
 
     parser.add_argument(
         'out', type=str, nargs='?',
-        help='output path of the compressed binary file')
+        help='output path of the compressed binary file (.cbin)')
 
     parser.add_argument(
         'outmeta', type=str, nargs='?',
-        help='output path of the compression metadata file')
+        help='output path of the compression metadata JSON file (.ch)')
 
-    parser.add_argument('-d', type=str, help='data type')
-    parser.add_argument('-s', type=float, help='sample rate')
-    parser.add_argument('-n', type=int, help='number of channels')
-    parser.add_argument('-p', type=int, help='number of CPUs to use')
-    parser.add_argument('-c', type=int, help='chunk duration')
+    parser.add_argument('-d', '--dtype', type=str, help='data type')
+    parser.add_argument('-s', '--sample-rate', type=float, help='sample rate')
+    parser.add_argument('-n', '--n-channels', type=int, help='number of channels')
+    parser.add_argument('-p', '--cpus', type=int, help='number of CPUs to use')
+    parser.add_argument('-c', '--chunk', type=int, help='chunk duration')
 
     _shared_options(parser)
 
@@ -857,6 +886,7 @@ def mtscomp_parser():
 
 def mtscomp(args=None):
     """Compress a file."""
+    sys.excepthook = exception_handler
     parser = mtscomp_parser()
     pargs, config = _args_to_config(
         parser, args or sys.argv[1:], compress=True)
@@ -876,15 +906,17 @@ def mtsdecomp_parser():
 
     parser.add_argument(
         'cdata', type=str,
-        help='path to the input compressed binary file')
+        help='path to the input compressed binary file (.cbin)')
 
     parser.add_argument(
         'cmeta', type=str, nargs='?',
-        help='path to the input compression metadata file')
+        help='path to the input compression metadata JSON file (.ch)')
 
     parser.add_argument(
-        'out', type=str, nargs='?',
-        help='path to the output decompressed file')
+        '-o', '--out', type=str, nargs='?',
+        help='path to the output decompressed file (.bin)')
+
+    parser.add_argument('--overwrite', '-f', action='store_true', help='overwrite existing output')
 
     _shared_options(parser)
 
@@ -893,12 +925,15 @@ def mtsdecomp_parser():
 
 def mtsdecomp(args=None):
     """Decompress a file."""
+    sys.excepthook = exception_handler
     parser = mtsdecomp_parser()
     pargs, config = _args_to_config(parser, args or sys.argv[1:], compress=False)
     add_default_handler('DEBUG' if pargs.debug else 'INFO')
     decompress(
-        pargs.cdata, pargs.cmeta, pargs.out,
+        pargs.cdata, pargs.cmeta, out=pargs.out,
         check_after_decompress=config.check_after_compress,
+        write_output=True,
+        overwrite=pargs.overwrite,
     )
 
 
@@ -908,6 +943,7 @@ def mtsdecomp(args=None):
 
 def mtsdesc(args=None):
     """Describe a compressed file."""
+    sys.excepthook = exception_handler
     parser = mtsdecomp_parser()
     pargs = parser.parse_args(args or sys.argv[1:])
     r = Reader()
