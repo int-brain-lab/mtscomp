@@ -12,6 +12,7 @@ import io
 from itertools import product
 import logging
 import os
+import os.path as op
 from pathlib import Path
 import re
 
@@ -292,10 +293,13 @@ def test_check_fail(path, arr):
         # First, we need to close the original memmapped file before we can write to it.
         writer.close()
         # Then, we change one byte in it.
-        with open(str(path), 'wb') as f:
-            f.seek(out.stat().st_size // 2)
-            f.write(os.urandom(1))
-            f.seek(0)
+        f_size = op.getsize(path)
+        with open(str(path), 'r+b') as f:
+            f.seek(f_size // 2)
+            f.write(os.urandom(8))
+        assert not np.allclose(np.fromfile(path, dtype=arr.dtype), arr.ravel())
+        # The file size should be the same, although one byte has been changed.
+        assert op.getsize(path) == f_size
         # Finally, we open it again before the check.
         writer.open(path, sample_rate=sample_rate, n_channels=arr.shape[1], dtype=arr.dtype)
 
