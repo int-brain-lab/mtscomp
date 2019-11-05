@@ -14,9 +14,11 @@ import json
 import logging
 import multiprocessing as mp
 from multiprocessing.dummy import Pool as ThreadPool
+import os
 import os.path as op
 from pathlib import Path
 import sys
+from threading import Lock
 import zlib
 
 # import traceback
@@ -25,6 +27,9 @@ from tqdm import tqdm
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+lock = Lock()  # use for concurrent read on the same file with multithreaded decompression
 
 
 #------------------------------------------------------------------------------
@@ -524,6 +529,10 @@ class Reader:
         self.shape = (self.n_samples, self.n_channels)
         self.ndim = 2
 
+        # Batches.
+        self.batch_size = self.config.n_threads  # in each batch, there is 1 chunk per thread.
+        self.n_batches = int(np.ceil(self.n_chunks / self.batch_size))
+
         # Open data.
         if isinstance(cdata, (str, Path)):
             cdata = open(cdata, 'rb')
@@ -546,9 +555,18 @@ class Reader:
 
     def read_chunk(self, chunk_idx, chunk_start, chunk_length):
         """Read a compressed chunk and return a NumPy array."""
+        logger.debug(f"Reading compressed chunk {chunk_idx}, {chunk_start}, {chunk_length}")
         # Load the compressed chunk from the file.
-        self.cdata.seek(chunk_start)
-        cbuffer = self.cdata.read(chunk_length)
+        if hasattr(os, 'pread'):
+            # On UNIX, we use an atomic system call to read N bytes of data from the file so that
+            # this call is thread-safe.
+            cbuffer = os.pread(self.cdata.fileno(), chunk_length, chunk_start)
+        else:  # pragma: no cover
+            # Otherwise, we have to use two system calls, a seek and a read, and we need to
+            # put a lock so that we're sure that this pair of calls is atomic across threads.
+            with lock:
+                self.cdata.seek(chunk_start)
+                cbuffer = self.cdata.read(chunk_length)
         assert len(cbuffer) == chunk_length
         # Decompress the chunk.
         buffer = zlib.decompress(cbuffer)
@@ -565,7 +583,14 @@ class Reader:
         chunki = cumsum_along_axis(chunki, axis=0 if self.cmeta.do_time_diff else None)
         assert chunki.dtype == chunk.dtype
         assert chunki.shape == chunk.shape == (n_samples_chunk, self.n_channels)
-        return chunki
+        return np.ascontiguousarray(chunki)  # needed when using F ordering in compression
+
+    def _decompress_chunk(self, chunk_idx):
+        """Decompress a chunk."""
+        assert 0 <= chunk_idx <= self.n_chunks - 1
+        chunk_start = self.chunk_offsets[chunk_idx]
+        chunk_length = self.chunk_offsets[chunk_idx + 1] - chunk_start
+        return chunk_idx, self.read_chunk(chunk_idx, chunk_start, chunk_length)
 
     def _validate_index(self, i, value_for_none=0):
         if i is None:
@@ -598,16 +623,42 @@ class Reader:
         if out is None:
             out = Path(self.cdata.name).with_suffix('.bin')
         out = Path(out)
+        # Handle overwriting.
         if not overwrite and out.exists():  # pragma: no cover
             raise ValueError(
                 "The output file %s already exists, use --overwrite or specify another "
                 "output path." % out)
-        # Read all chunks and save them to disk.
+        elif overwrite and out.exists():
+            # NOTE: for some reason, on my computer (Ubuntu 19.04 on fresh ext4 HDD), closing the
+            # output file is very slow if it is being overwritten, rather than if it's a new file.
+            # So deleting the file to be overwritten before overwriting it saves ~10 seconds.
+            logger.debug("Deleting %s.", out)
+            out.unlink()
+        # Create the thread pool.
+        self.pool = ThreadPool(self.batch_size)
         with open(out, 'wb') as fb:
-            for chunk_idx, chunk_start, chunk_length in tqdm(
-                    self.iter_chunks(), desc='Decompressing', total=self.n_chunks):
-                self.read_chunk(chunk_idx, chunk_start, chunk_length).tofile(fb)
+            for batch in tqdm(range(self.n_batches), desc='Decompressing'):
+                first_chunk = self.batch_size * batch  # first included
+                last_chunk = min(self.batch_size * (batch + 1), self.n_chunks)  # last excluded
+                assert 0 <= first_chunk < last_chunk <= self.n_chunks
+                logger.debug(
+                    "Processing batch #%d/%d with chunks %s.",
+                    batch + 1, self.n_batches, ', '.join(map(str, range(first_chunk, last_chunk))))
+                # Decompress all chunks in the batch.
+                decompressed_chunks = dict(self.pool.map(
+                    self._decompress_chunk, range(first_chunk, last_chunk)))
+                # Return a dictionary chunk_idx: compressed_buffer
+                assert set(decompressed_chunks.keys()) <= set(range(first_chunk, last_chunk))
+                # Write the batch chunks to disk.
+                # Warning: we need to process the chunks in order.
+                for chunk_idx in sorted(decompressed_chunks.keys()):
+                    decompressed_chunk = decompressed_chunks[chunk_idx]
+                    fb.write(decompressed_chunk)
             dsize = fb.tell()
+        assert dsize == self.chunk_bounds[-1] * self.n_channels * self.dtype.itemsize
+        # Close the thread pool.
+        self.pool.close()
+        self.pool.join()
         logger.info("Wrote %s (%.1f GB).", out, dsize / 1024 ** 3)
         if self.check_after_decompress:
             decompressed = load_raw_data(out, n_channels=self.n_channels, dtype=self.dtype)
@@ -772,8 +823,7 @@ def compress(
     return length
 
 
-def decompress(
-        cdata, cmeta, out=None, check_after_decompress=None, write_output=False, overwrite=False):
+def decompress(cdata, cmeta, out=None, write_output=False, overwrite=False, **kwargs):
     """Read an array from a compressed dataset (two files, cdata and cmeta), and
     return a NumPy-like array (memmapping the compressed data file, and decompressing on the fly).
 
@@ -805,7 +855,7 @@ def decompress(
     """
     if out:
         write_output = True
-    r = Reader(check_after_decompress=check_after_decompress)
+    r = Reader(**kwargs)
     r.open(cdata, cmeta)
     if write_output:
         r.tofile(out, overwrite=overwrite)
@@ -827,20 +877,22 @@ def exception_handler(
 def _shared_options(parser):
     parser.add_argument('-nc', '--no-check', action='store_false', help='no check')
     parser.add_argument('-v', '--debug', action='store_true', help='verbose')
+    parser.add_argument('-p', '--cpus', type=int, help='number of CPUs to use')
 
 
 def _args_to_config(parser, args, compress=True):
     pargs = parser.parse_args(args)
     # parser.nc=True means that the flag was not given => switch to default (True or config)
     check_after = None if pargs.no_check is True else False
-    kwargs = {}
+    kwargs = dict(
+        n_threads=pargs.cpus,
+    )
     if compress:
         kwargs.update(
             sample_rate=pargs.sample_rate,
             n_channels=pargs.n_channels,
             dtype=pargs.dtype.strip() if pargs.dtype else pargs.dtype,
             chunk_duration=pargs.chunk,
-            n_threads=pargs.cpus,
             check_after_compress=check_after,
         )
     else:
@@ -873,7 +925,6 @@ def mtscomp_parser():
     parser.add_argument('-d', '--dtype', type=str, help='data type')
     parser.add_argument('-s', '--sample-rate', type=float, help='sample rate')
     parser.add_argument('-n', '--n-channels', type=int, help='number of channels')
-    parser.add_argument('-p', '--cpus', type=int, help='number of CPUs to use')
     parser.add_argument('-c', '--chunk', type=int, help='chunk duration')
 
     _shared_options(parser)
@@ -931,9 +982,10 @@ def mtsdecomp(args=None):
     add_default_handler('DEBUG' if pargs.debug else 'INFO')
     decompress(
         pargs.cdata, pargs.cmeta, out=pargs.out,
-        check_after_decompress=config.check_after_compress,
+        # check_after_decompress=config.check_after_compress,
         write_output=True,
         overwrite=pargs.overwrite,
+        **config
     )
 
 
