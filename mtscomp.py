@@ -498,7 +498,7 @@ class Reader:
         self.cache_size = self.config.cache_size
         self.check_after_decompress = self.config.check_after_decompress
 
-    def open(self, cdata, cmeta):
+    def open(self, cdata, cmeta=None):
         """Open a compressed data file.
 
         Parameters
@@ -823,7 +823,7 @@ def compress(
     return length
 
 
-def decompress(cdata, cmeta, out=None, write_output=False, overwrite=False, **kwargs):
+def decompress(cdata, cmeta=None, out=None, write_output=False, overwrite=False, **kwargs):
     """Read an array from a compressed dataset (two files, cdata and cmeta), and
     return a NumPy-like array (memmapping the compressed data file, and decompressing on the fly).
 
