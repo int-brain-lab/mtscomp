@@ -10,6 +10,7 @@
 import argparse
 import bisect
 from functools import lru_cache
+import hashlib
 import json
 import logging
 import multiprocessing as mp
@@ -295,6 +296,8 @@ class Writer:
         logger.info(
             "Opening %s, duration %.1fs, %d channels.", data_path, duration, self.n_channels)
         self._compute_chunk_bounds()
+        self.sha1_compressed = hashlib.sha1()
+        self.sha1_uncompressed = hashlib.sha1()
 
     def _compute_chunk_bounds(self):
         """Compute the chunk bounds, in number of time samples."""
@@ -327,6 +330,8 @@ class Writer:
             'chunk_bounds': self.chunk_bounds,
             'chunk_offsets': self.chunk_offsets,
             'chunk_order': self.chunk_order,
+            'sha1_compressed': self.sha1_compressed.hexdigest(),
+            'sha1_uncompressed': self.sha1_uncompressed.hexdigest(),
         }
 
     def get_chunk(self, chunk_idx):
@@ -366,7 +371,7 @@ class Writer:
         chunkdc = zlib.compress(chunkd.tobytes(order=self.chunk_order))
         ratio = 100 - 100 * len(chunkdc) / (chunk.size * chunk.itemsize)
         logger.debug("Chunk %d/%d: -%.3f%%.", chunk_idx + 1, self.n_chunks, ratio)
-        return chunk_idx, chunkdc
+        return chunk_idx, (chunk, chunkdc)
 
     def compress_batch(self, first_chunk, last_chunk):
         """Write a given chunk into the output file.
@@ -444,12 +449,15 @@ class Writer:
                 # Write the batch chunks to disk.
                 # Warning: we need to process the chunks in order.
                 for chunk_idx in sorted(compressed_chunks.keys()):
-                    compressed_chunk = compressed_chunks[chunk_idx]
+                    uncompressed_chunk, compressed_chunk = compressed_chunks[chunk_idx]
                     fb.write(compressed_chunk)
                     # Append the chunk offsets.
                     length = len(compressed_chunk)
                     offset += length
                     self.chunk_offsets.append(offset)
+                    # Compute the SHA1 hashes.
+                    self.sha1_uncompressed.update(uncompressed_chunk)
+                    self.sha1_compressed.update(compressed_chunk)
             # Final size of the file.
             csize = fb.tell()
         assert self.chunk_offsets[-1] == csize

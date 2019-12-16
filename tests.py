@@ -10,6 +10,8 @@
 from contextlib import redirect_stdout
 import io
 from itertools import product
+import json
+import hashlib
 import logging
 import os
 import os.path as op
@@ -130,11 +132,16 @@ def _round_trip(path, arr, **ckwargs):
     outmeta = path.parent / 'data.ch'
     compress(
         path, out, outmeta, sample_rate=sample_rate, n_channels=arr.shape[1],
-
         dtype=arr.dtype, **ckwargs)
     unc = decompress(out, outmeta)
     assert np.allclose(unc[:], arr)
     return unc
+
+
+def sha1(buf):
+    sha = hashlib.sha1()
+    sha.update(buf)
+    return sha.hexdigest()
 
 
 #------------------------------------------------------------------------------
@@ -331,9 +338,20 @@ def test_comp_decomp(path):
     # Check the files are equal.
     with open(str(path), 'rb') as f:
         buf1 = f.read()
+        sha1_original = sha1(buf1)
     with open(str(decompressed_path), 'rb') as f:
         buf2 = f.read()
+        sha1_decompressed = sha1(buf2)
     assert buf1 == buf2
+
+    # Check the SHA1s.
+    with open(str(out), 'rb') as f:
+        sha1_compressed = sha1(f.read())
+    with open(str(outmeta), 'r') as f:
+        meta = json.load(f)
+
+    assert meta['sha1_compressed'] == sha1_compressed
+    assert meta['sha1_uncompressed'] == sha1_decompressed == sha1_original
 
 
 #------------------------------------------------------------------------------
