@@ -573,3 +573,26 @@ def test_cli_3(path, arr):
     assert config.check_after_compress is True
     assert config.get('n_channels', None) is None
     assert config.sample_rate == 1234
+
+
+def test_cli_4(tmp_path_, arr):
+
+    arr = np.stack([arr, arr], axis=2)
+
+    root = Path(tmp_path_)
+    path = root / 'data.npy'
+    pathu = root / 'data.bin'
+
+    np.save(path, arr)
+    args = [str(path), '-s', str(sample_rate)]
+    mtscomp(args)
+    assert 'data.cnpy' in (p.name for p in path.parent.iterdir())
+
+    assert not pathu.exists()
+    pathc = root / 'data.cnpy'
+    args = [str(pathc)]
+    mtsdecomp(args)
+    assert pathu.exists()
+
+    arru = np.fromfile(pathu, dtype=arr.dtype).reshape(arr.shape)
+    assert np.allclose(arr, arru)

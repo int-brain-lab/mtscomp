@@ -273,23 +273,35 @@ class Writer:
             Whether the data should be memmapped.
 
         """
+
+        self.data_path = Path(data_path)
+
         # Get default parameters from the config file, if it exists.
         sample_rate = sample_rate or self.config.get('sample_rate', None)
         if not sample_rate:
             raise ValueError("Please provide a sample rate (-s option in the command-line).")
-        n_channels = n_channels or self.config.get('n_channels', None)
-        if not n_channels:
-            raise ValueError("Please provide n_channels (-n option in the command-line).")
-        dtype = dtype or self.config.get('dtype', None)
-        if not dtype:
-            raise ValueError("Please provide a dtype (-d option in the command-line).")
+
+        if str(data_path).endswith('.npy'):
+            # NPY files.
+            self.data = np.load(data_path, mmap_mode='r')
+            if self.data.ndim >= 3:
+                self.data = np.reshape(self.data, (-1, self.data.shape[-1]))
+            self.dtype = dtype = self.data.dtype
+            self.n_channels = n_channels = self.data.shape[1]
+        else:
+            # Raw binary files.
+            n_channels = n_channels or self.config.get('n_channels', None)
+            if not n_channels:
+                raise ValueError("Please provide n_channels (-n option in the command-line).")
+            dtype = dtype or self.config.get('dtype', None)
+            if not dtype:
+                raise ValueError("Please provide a dtype (-d option in the command-line).")
+            self.dtype = np.dtype(dtype)
+            self.data = load_raw_data(data_path, n_channels=n_channels, dtype=self.dtype)
 
         self.sample_rate = sample_rate
         assert sample_rate > 0
         assert n_channels > 0
-        self.dtype = np.dtype(dtype)
-        self.data_path = Path(data_path)
-        self.data = load_raw_data(data_path, n_channels=n_channels, dtype=self.dtype)
         self.file_size = self.data.size * self.data.itemsize
         assert self.data.ndim == 2
         self.n_samples, self.n_channels = self.data.shape
