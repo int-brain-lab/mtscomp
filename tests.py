@@ -241,7 +241,7 @@ def test_dtypes(path, dtype):
     _round_trip(path, arr)
 
 
-def test_reader_indexing(path, arr):
+def test_reader_indexing_1(path, arr):
     # Write the array into a raw data binary file.
     M = np.abs(arr).max()
     arr16 = _to_int16(arr, M)
@@ -284,6 +284,50 @@ def test_reader_indexing(path, arr):
         assert sliced.shape == expected.shape
         assert np.array_equal(sliced, expected)
         assert np.allclose(_from_int16(sliced, M), arr[s], atol=1e-4)
+
+
+def test_reader_indexing_2(path, arr):
+    # Write the array into a raw data binary file.
+    M = np.abs(arr).max()
+    arr16 = _to_int16(arr, M)
+    unc = _round_trip(path, arr16)
+    n = unc.shape[0]
+
+    expected = [
+        (-1, 2, 0, 0),
+        (0, 0, 0, 0),
+        (0, 1, 0, 0),
+        (1, 1, 0, 0),
+        (1, 1, 0, 0),
+        (2, 1, 0, 0),
+        (2, -1, 0, 0),
+        (2, 2, 0, 0),
+        (2, 2, 0, 0),
+
+        (1233, 1233, 0, 0),
+        (1233, 1234, 0, 1),
+        (1234, 1234, 1, 1),
+        (1234, 1235, 1, 1),
+
+
+        (1233, 1233, 0, 0),
+        (1233, 1234, 0, 1),
+        (1234, 1234, 1, 1),
+        (1234, 1235, 1, 1),
+
+        (-10000, 10000, 0, 5),
+        (0, 10000, 0, 5),
+
+        (1233, 10000, 0, 5),
+        (1234, 10000, 1, 5),
+
+        (6996, 10000, 5, 5),
+        (6997, 10000, 5, 5),
+        (6998, 10000, 5, 5),
+    ]
+
+    for i0, i1, c0, c1 in expected:
+        assert unc._chunks_for_interval(i0, i1) == (c0, c1)
 
 
 def test_check_fail(path, arr):

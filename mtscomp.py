@@ -103,6 +103,10 @@ class Bunch(dict):
         self.__dict__ = self
 
 
+def _clip(x, a, b):
+    return max(a, min(b, x))
+
+
 #------------------------------------------------------------------------------
 # I/O utils
 #------------------------------------------------------------------------------
@@ -605,23 +609,31 @@ class Reader:
             i = value_for_none
         elif i < 0:
             i += self.n_samples
-        i = np.clip(i, 0, self.n_samples)
+        i = _clip(i, 0, self.n_samples)
         assert 0 <= i <= self.n_samples
         return i
 
     def _chunks_for_interval(self, i0, i1):
         """Find the first and last chunks to be loaded in order to get the data between
         time samples `i0` and `i1`."""
-        assert i0 <= i1
 
-        first_chunk = max(0, bisect.bisect_left(self.chunk_bounds, i0) - 1)
-        assert first_chunk >= 0
+        i0 = _clip(i0, 0, self.n_samples - 1)
+        i1 = _clip(i1, i0, self.n_samples - 1)
+        assert 0 <= i0 <= i1 <= self.n_samples
+
+        first_chunk = _clip(
+            bisect.bisect_right(self.chunk_bounds, i0) - 1, 0, self.n_chunks - 1)
+        assert 0 <= first_chunk < self.n_chunks
         assert self.chunk_bounds[first_chunk] <= i0
+        # Ensure we don't load unnecessary chunks.
+        assert self.chunk_bounds[first_chunk + 1] > i0
 
-        last_chunk = min(
-            bisect.bisect_left(self.chunk_bounds, i1, lo=first_chunk),
-            self.n_chunks - 1)
-        assert i1 <= self.chunk_bounds[last_chunk + 1]
+        last_chunk = _clip(
+            bisect.bisect_right(self.chunk_bounds, i1, lo=first_chunk) - 1, 0, self.n_chunks - 1)
+        assert 0 <= last_chunk < self.n_chunks
+        assert self.chunk_bounds[last_chunk + 1] >= i1
+        # Ensure we don't load unnecessary chunks.
+        assert self.chunk_bounds[last_chunk] <= i1
 
         assert 0 <= first_chunk <= last_chunk <= self.n_chunks - 1
         return first_chunk, last_chunk
@@ -694,10 +706,14 @@ class Reader:
                 chunks.append(chunk)
             if not chunks:  # pragma: no cover
                 return fallback
-            # Concatenate all chunks.
-            ns = sum(chunk.shape[0] for chunk in chunks)
-            arr = np.empty((ns, self.n_channels), dtype=self.dtype)
-            arr = np.concatenate(chunks, out=arr)
+            if first_chunk < last_chunk:
+                # Concatenate all chunks.
+                ns = sum(chunk.shape[0] for chunk in chunks)
+                arr = np.empty((ns, self.n_channels), dtype=self.dtype)
+                arr = np.concatenate(chunks, out=arr)
+            else:
+                assert len(chunks) == 1
+                arr = chunks[0]
             assert arr.ndim == 2
             assert arr.shape[1] == self.n_channels
             assert arr.shape[0] == (
