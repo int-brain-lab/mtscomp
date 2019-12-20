@@ -544,6 +544,7 @@ class Reader:
         self.cmeta = Bunch(cmeta)
         # Read some values from the metadata file.
         self.n_channels = self.cmeta.n_channels
+        self.sample_rate = self.cmeta.sample_rate
         self.dtype = np.dtype(self.cmeta.dtype)
         self.chunk_offsets = self.cmeta.chunk_offsets
         self.chunk_bounds = self.cmeta.chunk_bounds
