@@ -617,6 +617,13 @@ class Reader:
         chunk_length = self.chunk_offsets[chunk_idx + 1] - chunk_start
         return chunk_idx, self.read_chunk(chunk_idx, chunk_start, chunk_length)
 
+    def decompress_chunks(self, chunk_ids, pool=None):
+        # Return a dictionary chunk_idx: decompressed_chunk
+        assert pool
+        out = dict(pool.map(self._decompress_chunk, chunk_ids))
+        assert set(out.keys()) == set(chunk_ids)
+        return out
+
     def _validate_index(self, i, value_for_none=0):
         if i is None:
             i = value_for_none
@@ -651,6 +658,16 @@ class Reader:
         assert 0 <= first_chunk <= last_chunk <= self.n_chunks - 1
         return first_chunk, last_chunk
 
+    def start_thread_pool(self):
+        """Start the thread pool for multithreaded decompression."""
+        self.pool = ThreadPool(self.batch_size)
+        return self.pool
+
+    def stop_thread_pool(self):
+        """Stop the thread pool."""
+        self.pool.close()
+        self.pool.join()
+
     def tofile(self, out, overwrite=False):
         """Write the decompressed array to disk."""
         if out is None:
@@ -668,7 +685,7 @@ class Reader:
             logger.debug("Deleting %s.", out)
             out.unlink()
         # Create the thread pool.
-        self.pool = ThreadPool(self.batch_size)
+        self.start_thread_pool()
         with open(out, 'wb') as fb:
             for batch in tqdm(range(self.n_batches), desc='Decompressing'):
                 first_chunk = self.batch_size * batch  # first included
@@ -678,10 +695,8 @@ class Reader:
                     "Processing batch #%d/%d with chunks %s.",
                     batch + 1, self.n_batches, ', '.join(map(str, range(first_chunk, last_chunk))))
                 # Decompress all chunks in the batch.
-                decompressed_chunks = dict(self.pool.map(
-                    self._decompress_chunk, range(first_chunk, last_chunk)))
-                # Return a dictionary chunk_idx: compressed_buffer
-                assert set(decompressed_chunks.keys()) <= set(range(first_chunk, last_chunk))
+                decompressed_chunks = self.decompress_chunks(
+                    range(first_chunk, last_chunk), self.pool)
                 # Write the batch chunks to disk.
                 # Warning: we need to process the chunks in order.
                 for chunk_idx in sorted(decompressed_chunks.keys()):
@@ -690,8 +705,7 @@ class Reader:
             dsize = fb.tell()
         assert dsize == self.chunk_bounds[-1] * self.n_channels * self.dtype.itemsize
         # Close the thread pool.
-        self.pool.close()
-        self.pool.join()
+        self.stop_thread_pool()
         logger.info("Wrote %s (%.1f GB).", out, dsize / 1024 ** 3)
         if self.check_after_decompress:
             decompressed = load_raw_data(out, n_channels=self.n_channels, dtype=self.dtype)

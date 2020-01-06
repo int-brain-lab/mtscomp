@@ -23,7 +23,8 @@ from pytest import fixture, raises, mark
 
 import mtscomp as mtscomp_mod
 from mtscomp import (
-    add_default_handler, Writer, Reader, load_raw_data, diff_along_axis, cumsum_along_axis,
+    add_default_handler, lru_cache,
+    Writer, Reader, load_raw_data, diff_along_axis, cumsum_along_axis,
     mtscomp_parser, mtsdecomp_parser, _args_to_config, read_config,
     compress, decompress, mtsdesc, mtscomp, mtsdecomp,
     CHECK_ATOL)
@@ -396,6 +397,26 @@ def test_comp_decomp(path):
 
     assert meta['sha1_compressed'] == sha1_compressed
     assert meta['sha1_uncompressed'] == sha1_decompressed == sha1_original
+
+
+def test_decompress_pool(path, arr):
+    _write_arr(path, arr)
+    out = path.parent / 'data.cbin'
+    outmeta = path.parent / 'data.ch'
+    compress(
+        path, out, outmeta, sample_rate=sample_rate, n_channels=arr.shape[1], dtype=arr.dtype,
+        check_after_compress=False)
+    reader = decompress(out, outmeta, cache_size=2)
+
+    pool = reader.start_thread_pool()
+    d1 = reader.decompress_chunks([0, 1, 2], pool=pool)
+    d2 = reader.decompress_chunks([1, 2, 3], pool=pool)
+    d3 = reader.decompress_chunks([0, 1, 3], pool=pool)
+    reader.stop_thread_pool()
+
+    assert sorted(d1.keys()) == [0, 1, 2]
+    assert sorted(d2.keys()) == [1, 2, 3]
+    assert sorted(d3.keys()) == [0, 1, 3]
 
 
 #------------------------------------------------------------------------------
