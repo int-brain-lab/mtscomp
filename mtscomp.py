@@ -565,8 +565,15 @@ class Reader:
             cdata = open(cdata, 'rb')
         self.cdata = cdata
 
-        if self.cache_size > 0:
-            self.read_chunk = lru_cache(maxsize=self.cache_size)(self.read_chunk)
+        self.set_cache_size()
+
+    def set_cache_size(self, cache_size=None):
+        """Set the LRU cache size for self.read_chunk()."""
+        if cache_size != self.cache_size:
+            cache_size = cache_size or self.cache_size
+            assert cache_size > 0
+            self.read_chunk = lru_cache(maxsize=cache_size)(self.read_chunk)
+            self.cache_size = cache_size
 
     def iter_chunks(self, first_chunk=0, last_chunk=None):
         """Iterate over the compressed chunks.

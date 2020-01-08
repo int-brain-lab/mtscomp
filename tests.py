@@ -23,7 +23,7 @@ from pytest import fixture, raises, mark
 
 import mtscomp as mtscomp_mod
 from mtscomp import (
-    add_default_handler, lru_cache,
+    add_default_handler,
     Writer, Reader, load_raw_data, diff_along_axis, cumsum_along_axis,
     mtscomp_parser, mtsdecomp_parser, _args_to_config, read_config,
     compress, decompress, mtsdesc, mtscomp, mtsdecomp,
