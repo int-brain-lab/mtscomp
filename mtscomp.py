@@ -237,6 +237,7 @@ class Writer:
 
     """
     def __init__(self, before_check=None, **kwargs):
+        self.quiet = kwargs.pop('quiet', False)
         config = read_config(**kwargs)
         self.config = config
         self.chunk_duration = config.chunk_duration
@@ -451,7 +452,7 @@ class Writer:
         ts = ' on %d CPUs.' % self.n_threads if self.n_threads > 1 else '.'
         logger.info("Starting compression" + ts)
         with open(out, 'wb') as fb:
-            for batch in tqdm(range(self.n_batches), desc='Compressing'):
+            for batch in tqdm(range(self.n_batches), desc='Compressing', disable=self.quiet):
                 first_chunk = self.batch_size * batch  # first included
                 last_chunk = min(self.batch_size * (batch + 1), self.n_chunks)  # last excluded
                 assert 0 <= first_chunk < last_chunk <= self.n_chunks
@@ -518,6 +519,7 @@ class Reader:
 
     """
     def __init__(self, **kwargs):
+        self.quiet = kwargs.pop('quiet', False)
         self.config = read_config(**kwargs)
         self.cache_size = self.config.cache_size
         self.check_after_decompress = self.config.check_after_decompress
@@ -687,7 +689,7 @@ class Reader:
         # Create the thread pool.
         self.start_thread_pool()
         with open(out, 'wb') as fb:
-            for batch in tqdm(range(self.n_batches), desc='Decompressing'):
+            for batch in tqdm(range(self.n_batches), desc='Decompressing', disable=self.quiet):
                 first_chunk = self.batch_size * batch  # first included
                 last_chunk = min(self.batch_size * (batch + 1), self.n_chunks)  # last excluded
                 assert 0 <= first_chunk < last_chunk <= self.n_chunks
