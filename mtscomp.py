@@ -37,7 +37,7 @@ lock = Lock()  # use for concurrent read on the same file with multithreaded dec
 # Global variables
 #------------------------------------------------------------------------------
 
-__version__ = '1.0.0b1'
+__version__ = '1.0.1'
 FORMAT_VERSION = '1.0'
 
 __all__ = ('load_raw_data', 'Writer', 'Reader', 'compress', 'decompress')
