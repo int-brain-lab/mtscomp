@@ -237,6 +237,7 @@ class Writer:
 
     """
     def __init__(self, before_check=None, **kwargs):
+        self.pool = None
         self.quiet = kwargs.pop('quiet', False)
         config = read_config(**kwargs)
         self.config = config
@@ -519,6 +520,7 @@ class Reader:
 
     """
     def __init__(self, **kwargs):
+        self.pool = None
         self.quiet = kwargs.pop('quiet', False)
         self.config = read_config(**kwargs)
         self.cache_size = self.config.cache_size
@@ -621,6 +623,7 @@ class Reader:
 
     def _decompress_chunk(self, chunk_idx):
         """Decompress a chunk."""
+        logger.debug("Starting decompression of chunk %d.", chunk_idx)
         assert 0 <= chunk_idx <= self.n_chunks - 1
         chunk_start = self.chunk_offsets[chunk_idx]
         chunk_length = self.chunk_offsets[chunk_idx + 1] - chunk_start
@@ -669,13 +672,18 @@ class Reader:
 
     def start_thread_pool(self):
         """Start the thread pool for multithreaded decompression."""
+        if self.pool:  # pragma: no cover
+            return self.pool
+        logging.debug("Starting thread pool with %d CPUs.", self.batch_size)
         self.pool = ThreadPool(self.batch_size)
         return self.pool
 
     def stop_thread_pool(self):
         """Stop the thread pool."""
+        logger.debug("Stopping thread pool.")
         self.pool.close()
         self.pool.join()
+        self.pool = None
 
     def tofile(self, out, overwrite=False):
         """Write the decompressed array to disk."""
