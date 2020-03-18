@@ -263,6 +263,9 @@ def test_reader_indexing_1(path, arr):
         (slice(None, None, None),),
         (slice(None, None, None), slice(1, -1, 2)),
         (slice(None, None, None), [1, 5, 3]),
+        (slice(None, None, None), 1),
+        (1, slice(None, None, None)),
+        (2, 1),
     ])
 
     # Single integers.
@@ -292,7 +295,6 @@ def test_reader_indexing_2(path, arr):
     M = np.abs(arr).max()
     arr16 = _to_int16(arr, M)
     unc = _round_trip(path, arr16)
-    n = unc.shape[0]
 
     expected = [
         (-1, 2, 0, 0),
@@ -353,7 +355,7 @@ def test_check_fail(path, arr):
             # Also, it's better to change multiple bytes at the same time to be sure that
             # the underlying number (e.g. float64) is fully modified.
             f.write(os.urandom(8))
-        assert not np.allclose(np.fromfile(path, dtype=arr.dtype), arr.ravel())
+        assert not np.allclose(np.fromfile(str(path), dtype=arr.dtype), arr.ravel())
         # The file size should be the same, although one byte has been changed.
         assert op.getsize(path) == f_size
         # Finally, we open it again before the check.
@@ -615,5 +617,5 @@ def test_cli_4(tmp_path_, arr):
     mtsdecomp(args)
     assert pathu.exists()
 
-    arru = np.fromfile(pathu, dtype=arr.dtype).reshape(arr.shape)
+    arru = np.fromfile(str(pathu), dtype=arr.dtype).reshape(arr.shape)
     assert np.allclose(arr, arru)
