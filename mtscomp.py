@@ -672,7 +672,7 @@ class Reader:
 
     def start_thread_pool(self):
         """Start the thread pool for multithreaded decompression."""
-        if self.pool:  # pragma: no cover
+        if self.pool:  #  pragma: no cover
             return self.pool
         logging.debug("Starting thread pool with %d CPUs.", self.batch_size)
         self.pool = ThreadPool(self.batch_size)
@@ -774,6 +774,8 @@ class Reader:
             # Multidimensional indexing.
             if len(item) == 1:
                 return self[item[0]]
+            elif len(item) == 2 and np.isscalar(item[0]):
+                return self[item[0]][item[1]]
             elif len(item) == 2:
                 return self[item[0]][:, item[1]]
         elif isinstance(item, int):
