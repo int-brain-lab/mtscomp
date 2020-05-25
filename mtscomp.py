@@ -67,7 +67,7 @@ CRITICAL_ERROR_URL = \
 
 # Set a null handler on the root logger
 logger = logging.getLogger('mtscomp')
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 logger.addHandler(logging.NullHandler())
 
 _logger_fmt = '%(asctime)s.%(msecs)03d [%(levelname)s] %(caller)s %(message)s'
