@@ -286,6 +286,7 @@ class Writer:
         if str(data_path).endswith('.npy'):
             # NPY files.
             self.data = np.load(data_path, mmap_mode='r')
+            self.shape = self.data.shape
             if self.data.ndim >= 3:
                 self.data = np.reshape(self.data, (-1, self.data.shape[-1]))
             self.dtype = dtype = self.data.dtype
@@ -300,8 +301,9 @@ class Writer:
                 raise ValueError("Please provide a dtype (-d option in the command-line).")
             self.dtype = np.dtype(dtype)
             self.data = load_raw_data(data_path, n_channels=n_channels, dtype=self.dtype)
+            self.shape = self.data.shape
 
-        self.sample_rate = sample_rate
+        self.sample_rate = float(sample_rate)
         assert sample_rate > 0
         assert n_channels > 0
         self.file_size = self.data.size * self.data.itemsize
@@ -350,6 +352,7 @@ class Writer:
             'chunk_order': self.chunk_order,
             'sha1_compressed': self.sha1_compressed.hexdigest(),
             'sha1_uncompressed': self.sha1_uncompressed.hexdigest(),
+            'shape': self.shape
         }
 
     def get_chunk(self, chunk_idx):

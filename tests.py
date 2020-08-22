@@ -421,6 +421,24 @@ def test_decompress_pool(path, arr):
     assert sorted(d3.keys()) == [0, 1, 3]
 
 
+def test_3d(path):
+    file_npy = path.parent.joinpath('titi.npy')
+    file_cnpy = path.parent.joinpath('titi.cnpy')
+    array = np.random.randint(-5000, high=5000, size=(100, 120, 130), dtype=np.int16)
+    np.save(file_npy, array)
+    # two way trip - makes sure that
+    # 1) the sample_rate fed as an int64 doesn't error
+    # 2) the initial shape of the array is saved in the meta-data
+    mtscomp_mod.compress(file_npy,
+                         out=file_cnpy,
+                         outmeta=file_cnpy.with_suffix('.ch'),
+                         sample_rate=np.prod(array.shape[1:]),  # here needs to cast as float
+                         dtype=array.dtype,
+                         do_time_diff=False)
+    d = mtscomp_mod.decompress(file_cnpy, cmeta=file_cnpy.with_suffix('.ch'))
+    assert np.all(np.isclose(d[:, :].reshape(d.cmeta.shape), array))
+
+
 #------------------------------------------------------------------------------
 # Read/write tests with different parameters
 #------------------------------------------------------------------------------
