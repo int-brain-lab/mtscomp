@@ -12,7 +12,7 @@ clean-pyc:
 clean: clean-build clean-pyc
 
 lint:
-	flake8 mtscomp
+	flake8
 
 test: lint
 	py.test -vv --cov-report term-missing --cov=mtscomp tests.py
