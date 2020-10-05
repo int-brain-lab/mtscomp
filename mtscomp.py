@@ -98,6 +98,7 @@ def add_default_handler(level='INFO', logger=logger):
 
 class Bunch(dict):
     """A subclass of dictionary with an additional dot syntax."""
+
     def __init__(self, *args, **kwargs):
         super(Bunch, self).__init__(*args, **kwargs)
         self.__dict__ = self
@@ -236,6 +237,7 @@ class Writer:
         Whether to perform the automatic check after compression.
 
     """
+
     def __init__(self, before_check=None, **kwargs):
         self.pool = None
         self.quiet = kwargs.pop('quiet', False)
@@ -522,8 +524,10 @@ class Reader:
         Whether to perform the automatic check after decompression.
 
     """
+
     def __init__(self, **kwargs):
         self.pool = None
+        self.cdata = None
         self.quiet = kwargs.pop('quiet', False)
         self.config = read_config(**kwargs)
         self.cache_size = self.config.cache_size
@@ -567,6 +571,9 @@ class Reader:
 
         # Open data.
         if isinstance(cdata, (str, Path)):
+            if Path(cdata).suffix in ('.bin', '.dat'):  # pragma: no cover
+                # This can arise if trying to decompress an already-decompressed file.
+                logger.error("File to decompress has unexpected extension %s.", Path(cdata).suffix)
             cdata = open(cdata, 'rb')
         self.cdata = cdata
 
@@ -608,7 +615,10 @@ class Reader:
                 cbuffer = self.cdata.read(chunk_length)
         assert len(cbuffer) == chunk_length
         # Decompress the chunk.
-        buffer = zlib.decompress(cbuffer)
+        try:
+            buffer = zlib.decompress(cbuffer)
+        except Exception:  # pragma: no cover
+            raise IOError("Compressed chunk #%d is corrupted." % chunk_idx)
         chunk = np.frombuffer(buffer, self.dtype)
         assert chunk.dtype == self.dtype
         # Find the chunk shape.
@@ -734,7 +744,56 @@ class Reader:
 
     def close(self):
         """Close all file handles."""
-        self.cdata.close()
+        if self.cdata:
+            self.cdata.close()
+
+    def chop(self, n_chunks, out=None):
+        assert n_chunks > 0
+        if n_chunks >= self.n_chunks:  # pragma: no cover
+            logger.warning("Cannot chop more chunks than there are in the original file.")
+            return
+        # self.cdata.seek(0)
+        assert n_chunks < self.n_chunks
+
+        # if out is None:
+        #     out = self.cdata.with_suffix('.chopped.cbin')
+        assert out is not None, "The output path must be specified."
+        out = Path(out)
+        assert out.suffix == '.cbin'
+        if out.exists():  # pragma: no cover
+            raise IOError("File %s already exists." % out)
+        out.parent.mkdir(exist_ok=True, parents=True)
+
+        # Write the chopped .cbin file
+        with open(out, 'wb') as f:
+            offset = 0
+            for i in tqdm(range(n_chunks), desc='Chopping %d chunks' % n_chunks):
+                chunk_length = self.chunk_offsets[i + 1] - self.chunk_offsets[i]
+                with lock:
+                    self.cdata.seek(offset)
+                    cbuffer = self.cdata.read(chunk_length)
+                assert len(cbuffer) == chunk_length
+                f.write(cbuffer)
+                offset += chunk_length
+                assert self.cdata.tell() == offset
+                assert f.tell() == offset
+        # logger.info("Wrote %s.", out)
+
+        # Write the .ch file.
+        outmeta = out.with_suffix('.ch')
+        if outmeta.exists():  # pragma: no cover
+            raise IOError("File %s already exists." % out)
+
+        cmeta = Bunch(self.cmeta.copy())
+        cmeta['chunk_bounds'] = cmeta['chunk_bounds'][:n_chunks + 1]
+        cmeta['chunk_offsets'] = cmeta['chunk_offsets'][:n_chunks + 1]
+        assert cmeta['chunk_offsets'][-1] == offset
+        cmeta['sha1_compressed'] = None
+        cmeta['sha1_uncompressed'] = None
+        cmeta['chopped'] = True
+        with open(outmeta, 'w') as f:
+            json.dump(cmeta, f, indent=2, sort_keys=True)
+        # logger.info("Wrote %s.", outmeta)
 
     def __getitem__(self, item):
         """Implement NumPy array slicing, return a regular in-memory NumPy array."""
@@ -1070,6 +1129,7 @@ def mtsdesc(args=None):
     """Describe a compressed file."""
     sys.excepthook = exception_handler
     parser = mtsdecomp_parser()
+    parser.description = 'Describe a compressed file.'
     pargs = parser.parse_args(args or sys.argv[1:])
     r = Reader()
     r.open(pargs.cdata, pargs.cmeta)
@@ -1085,3 +1145,32 @@ def mtsdesc(args=None):
     )
     for k, v in info.items():
         print('{:<15}'.format(k), str(v))
+
+
+#------------------------------------------------------------------------------
+# Command-line API: mtschop
+#------------------------------------------------------------------------------
+
+def mtschop(args=None):
+    """Chop a compressed file to N chunks without decompressing it."""
+    sys.excepthook = exception_handler
+    parser = argparse.ArgumentParser(
+        description='Chop a compressed file to N chunks without decompressing it.')
+
+    parser.add_argument(
+        'cdata', type=str,
+        help='path to the input compressed binary file (.cbin)')
+
+    parser.add_argument('-n', '--n_chunks', type=int, help='number of chunks to chop')
+
+    parser.add_argument(
+        '-o', '--out', type=str,
+        help='path to the output chopped compressed file (.cbin)')
+
+    _shared_options(parser)
+
+    pargs = parser.parse_args(args or sys.argv[1:])
+    r = Reader()
+    r.open(pargs.cdata)
+    r.chop(pargs.n_chunks, pargs.out)
+    r.close()

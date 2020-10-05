@@ -26,7 +26,7 @@ from mtscomp import (
     add_default_handler,
     Writer, Reader, load_raw_data, diff_along_axis, cumsum_along_axis,
     mtscomp_parser, mtsdecomp_parser, _args_to_config, read_config,
-    compress, decompress, mtsdesc, mtscomp, mtsdecomp,
+    compress, decompress, mtsdesc, mtscomp, mtsdecomp, mtschop,
     CHECK_ATOL)
 
 logger = logging.getLogger(__name__)
@@ -439,6 +439,50 @@ def test_3d(path):
     assert np.all(np.isclose(d[:, :].reshape(d.cmeta.shape), array))
 
 
+def test_chop(path):
+    arr = np.array(np.random.randint(low=0, high=255, size=(1000, 100)), dtype=np.int16)
+    _write_arr(path, arr)
+    out = path.parent / 'data.cbin'
+    outmeta = path.parent / 'data.ch'
+    compress(
+        path, out, outmeta, sample_rate=100, n_channels=arr.shape[1], dtype=arr.dtype,
+    )
+
+    # Chop with method #1
+    r = Reader()
+    r.open(out, outmeta)
+    out_chopped = out.with_name('data.chopped.cbin')
+    assert r.n_chunks == 10
+    r.chop(5, out_chopped)
+    r.close()
+    with open(str(out_chopped), 'rb') as f:
+        sha1_chopped = sha1(f.read())
+
+    # Check chopped file.
+    r = Reader()
+    r.open(out_chopped)
+    assert r.n_chunks == 5
+    arr_chopped = r[:]
+    assert arr_chopped.dtype == arr.dtype
+    assert arr_chopped.shape == (500, 100)
+    assert np.all(arr_chopped == arr[:500])
+    r.close()
+
+    # Chop with method #2
+    out_chopped2 = path.parent / 'data.chopped2.cbin'
+    outmeta_chopped2 = path.parent / 'data.chopped2.ch'
+    _write_arr(path, arr[:500])
+    compress(
+        path, out_chopped2, outmeta_chopped2, sample_rate=100,
+        n_channels=arr.shape[1], dtype=arr.dtype,
+    )
+
+    # Check that the chopped file is identical with both methods.
+    with open(str(out_chopped2), 'rb') as f:
+        sha1_chopped2 = sha1(f.read())
+    assert sha1_chopped == sha1_chopped2
+
+
 #------------------------------------------------------------------------------
 # Read/write tests with different parameters
 #------------------------------------------------------------------------------
@@ -637,3 +681,23 @@ def test_cli_4(tmp_path_, arr):
 
     arru = np.fromfile(str(pathu), dtype=arr.dtype).reshape(arr.shape)
     assert np.allclose(arr, arru)
+
+
+def test_cli_chop(path, arr):
+    _write_arr(path, arr)
+    out = path.parent / 'data.cbin'
+    out_chopped = path.parent / 'data.chopped.cbin'
+    out_chopped_decomp = path.parent / 'data.chopped.bin'
+
+    mtscomp([str(path), '-d', str(arr.dtype), '-s', str(sample_rate), '-n', str(arr.shape[1])])
+
+    # Chop 3 chunks of 1 second each.
+    mtschop([str(out), '-n', '3', '-o', str(out_chopped)])
+
+    # Decompress the chopped compressed file.
+    mtsdecomp([str(out_chopped), '-o', str(out_chopped_decomp)])
+
+    # Make sure it corresponds to the first 3 seconds of the original array.
+    arru = np.fromfile(str(out_chopped_decomp), dtype=arr.dtype)
+    arru = arru.reshape((-1, arr.shape[1]))
+    assert np.allclose(arr[:int(round(3 * sample_rate))], arru)
