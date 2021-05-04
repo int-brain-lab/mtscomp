@@ -177,6 +177,7 @@ def test_load_raw_data(path):
             n_channels = arr.shape[1] if arr.ndim >= 2 else 1
             loaded = load_raw_data(path=path, n_channels=n_channels, dtype=arr.dtype, mmap=mmap)
             assert np.array_equal(arr, loaded)
+            del loaded  # Close memmap
 
 
 def test_int16(arr):
