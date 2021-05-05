@@ -37,7 +37,7 @@ lock = Lock()  # use for concurrent read on the same file with multithreaded dec
 # Global variables
 #------------------------------------------------------------------------------
 
-__version__ = '1.0.1'
+__version__ = '1.0.2'
 FORMAT_VERSION = '1.0'
 
 __all__ = ('load_raw_data', 'Writer', 'Reader', 'compress', 'decompress')
@@ -866,23 +866,26 @@ class Reader:
 def check(data, out, outmeta):
     """Check that the compressed data matches the original array byte per byte."""
     unc = decompress(out, outmeta)
-    # Read all chunks.
-    for chunk_idx, chunk_start, chunk_length in tqdm(
-            unc.iter_chunks(), total=unc.n_chunks, desc='Checking'):
-        chunk = unc.read_chunk(chunk_idx, chunk_start, chunk_length)
-        # Find the corresponding chunk from the original data array.
-        i0, i1 = unc.chunk_bounds[chunk_idx], unc.chunk_bounds[chunk_idx + 1]
-        expected = data[i0:i1]
-        # Check the dtype and shape match.
-        assert chunk.dtype == expected.dtype
-        assert chunk.shape == expected.shape
-        if np.issubdtype(chunk.dtype, np.integer):
-            # For integer dtypes, check that the array are exactly equal.
-            assert np.array_equal(chunk, expected)
-        else:
-            # For floating point dtypes, check that the array are almost equal
-            # (diff followed by cumsum does not yield exactly the same floating point numbers).
-            assert np.allclose(chunk, expected, atol=CHECK_ATOL)
+    try:
+        # Read all chunks.
+        for chunk_idx, chunk_start, chunk_length in tqdm(
+                unc.iter_chunks(), total=unc.n_chunks, desc='Checking'):
+            chunk = unc.read_chunk(chunk_idx, chunk_start, chunk_length)
+            # Find the corresponding chunk from the original data array.
+            i0, i1 = unc.chunk_bounds[chunk_idx], unc.chunk_bounds[chunk_idx + 1]
+            expected = data[i0:i1]
+            # Check the dtype and shape match.
+            assert chunk.dtype == expected.dtype
+            assert chunk.shape == expected.shape
+            if np.issubdtype(chunk.dtype, np.integer):
+                # For integer dtypes, check that the array are exactly equal.
+                assert np.array_equal(chunk, expected)
+            else:
+                # For floating point dtypes, check that the array are almost equal
+                # (diff followed by cumsum does not yield exactly the same floating point numbers).
+                assert np.allclose(chunk, expected, atol=CHECK_ATOL)
+    finally:
+        unc.close()
 
 
 def compress(
