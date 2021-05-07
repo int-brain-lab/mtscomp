@@ -129,6 +129,7 @@ compress('data.bin', 'data.cbin', 'data.ch', sample_rate=20000., n_channels=256,
 # Decompress a pair (.cbin, .ch) and return an object that can be sliced like a NumPy array.
 arr = decompress('data.cbin', 'data.ch')
 X = arr[start:end, :]  # decompress the data on the fly directly from the file on disk
+arr.close()  # Close the file when done
 ```
 
 

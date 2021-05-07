@@ -50,6 +50,7 @@ setup(
             'mtscomp=mtscomp:mtscomp',
             'mtsdecomp=mtscomp:mtsdecomp',
             'mtsdesc=mtscomp:mtsdesc',
+            'mtschop=mtscomp:mtschop',
         ],
     },
     include_package_data=True,

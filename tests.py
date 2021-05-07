@@ -26,7 +26,7 @@ from mtscomp import (
     add_default_handler,
     Writer, Reader, load_raw_data, diff_along_axis, cumsum_along_axis,
     mtscomp_parser, mtsdecomp_parser, _args_to_config, read_config,
-    compress, decompress, mtsdesc, mtscomp, mtsdecomp,
+    compress, decompress, mtsdesc, mtscomp, mtsdecomp, mtschop,
     CHECK_ATOL)
 
 logger = logging.getLogger(__name__)
@@ -177,6 +177,7 @@ def test_load_raw_data(path):
             n_channels = arr.shape[1] if arr.ndim >= 2 else 1
             loaded = load_raw_data(path=path, n_channels=n_channels, dtype=arr.dtype, mmap=mmap)
             assert np.array_equal(arr, loaded)
+            del loaded  # Close memmap
 
 
 def test_int16(arr):
@@ -421,6 +422,68 @@ def test_decompress_pool(path, arr):
     assert sorted(d3.keys()) == [0, 1, 3]
 
 
+def test_3d(path):
+    file_npy = path.parent.joinpath('titi.npy')
+    file_cnpy = path.parent.joinpath('titi.cnpy')
+    array = np.random.randint(-5000, high=5000, size=(100, 120, 130), dtype=np.int16)
+    np.save(file_npy, array)
+    # two way trip - makes sure that
+    # 1) the sample_rate fed as an int64 doesn't error
+    # 2) the initial shape of the array is saved in the meta-data
+    mtscomp_mod.compress(file_npy,
+                         out=file_cnpy,
+                         outmeta=file_cnpy.with_suffix('.ch'),
+                         sample_rate=np.prod(array.shape[1:]),  # here needs to cast as float
+                         dtype=array.dtype,
+                         do_time_diff=False)
+    d = mtscomp_mod.decompress(file_cnpy, cmeta=file_cnpy.with_suffix('.ch'))
+    assert np.all(np.isclose(d[:, :].reshape(d.cmeta.shape), array))
+
+
+def test_chop(path):
+    arr = np.array(np.random.randint(low=0, high=255, size=(1000, 100)), dtype=np.int16)
+    _write_arr(path, arr)
+    out = path.parent / 'data.cbin'
+    outmeta = path.parent / 'data.ch'
+    compress(
+        path, out, outmeta, sample_rate=100, n_channels=arr.shape[1], dtype=arr.dtype,
+    )
+
+    # Chop with method #1
+    r = Reader()
+    r.open(out, outmeta)
+    out_chopped = out.with_name('data.chopped.cbin')
+    assert r.n_chunks == 10
+    r.chop(5, out_chopped)
+    r.close()
+    with open(str(out_chopped), 'rb') as f:
+        sha1_chopped = sha1(f.read())
+
+    # Check chopped file.
+    r = Reader()
+    r.open(out_chopped)
+    assert r.n_chunks == 5
+    arr_chopped = r[:]
+    assert arr_chopped.dtype == arr.dtype
+    assert arr_chopped.shape == (500, 100)
+    assert np.all(arr_chopped == arr[:500])
+    r.close()
+
+    # Chop with method #2
+    out_chopped2 = path.parent / 'data.chopped2.cbin'
+    outmeta_chopped2 = path.parent / 'data.chopped2.ch'
+    _write_arr(path, arr[:500])
+    compress(
+        path, out_chopped2, outmeta_chopped2, sample_rate=100,
+        n_channels=arr.shape[1], dtype=arr.dtype,
+    )
+
+    # Check that the chopped file is identical with both methods.
+    with open(str(out_chopped2), 'rb') as f:
+        sha1_chopped2 = sha1(f.read())
+    assert sha1_chopped == sha1_chopped2
+
+
 #------------------------------------------------------------------------------
 # Read/write tests with different parameters
 #------------------------------------------------------------------------------
@@ -619,3 +682,23 @@ def test_cli_4(tmp_path_, arr):
 
     arru = np.fromfile(str(pathu), dtype=arr.dtype).reshape(arr.shape)
     assert np.allclose(arr, arru)
+
+
+def test_cli_chop(path, arr):
+    _write_arr(path, arr)
+    out = path.parent / 'data.cbin'
+    out_chopped = path.parent / 'data.chopped.cbin'
+    out_chopped_decomp = path.parent / 'data.chopped.bin'
+
+    mtscomp([str(path), '-d', str(arr.dtype), '-s', str(sample_rate), '-n', str(arr.shape[1])])
+
+    # Chop 3 chunks of 1 second each.
+    mtschop([str(out), '-n', '3', '-o', str(out_chopped)])
+
+    # Decompress the chopped compressed file.
+    mtsdecomp([str(out_chopped), '-o', str(out_chopped_decomp)])
+
+    # Make sure it corresponds to the first 3 seconds of the original array.
+    arru = np.fromfile(str(out_chopped_decomp), dtype=arr.dtype)
+    arru = arru.reshape((-1, arr.shape[1]))
+    assert np.allclose(arr[:int(round(3 * sample_rate))], arru)
