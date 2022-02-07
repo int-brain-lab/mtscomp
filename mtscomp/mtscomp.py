@@ -40,8 +40,6 @@ lock = Lock()  # use for concurrent read on the same file with multithreaded dec
 __version__ = '1.0.2'
 FORMAT_VERSION = '1.0'
 
-__all__ = ('load_raw_data', 'Writer', 'Reader', 'compress', 'decompress')
-
 
 DEFAULT_CONFIG = list(dict(
     algorithm='zlib',  # only algorithm supported currently
