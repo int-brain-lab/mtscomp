@@ -103,8 +103,8 @@ def to_uint8(x, ab=None):
     y = (x - b) * a
     # x = y / a + b
     # assert np.all((0 <= y) & (y <= 255))
-    # return y.astype(np.uint8), (a, b)
-    return y, (a, b)
+    return y.astype(np.uint8), (a, b)
+    # return y, (a, b)
 
 
 def from_uint8(y, ab):
@@ -176,7 +176,9 @@ def excerpt_svd(reader, rank, kept_chunks=20):
     svd.sample_rate = reader.sample_rate
     svd.downsample_factor = DOWNSAMPLE_FACTOR
     svd.rank = min(rank, svd.n_channels)
-    svd.a, svd.b = _uint8_coefs(excerpts)
+
+    # NOTE: compute the uint8 scaling on the first second of data
+    svd.ab = _uint8_coefs(excerpts[:, :int(svd.sample_rate)])
 
     assert svd
     return svd
@@ -198,8 +200,10 @@ def _compress_chunk(raw, svd):
     # lossy is (nc, ns)
     assert lossy.shape[0] < lossy.shape[1]
 
-    lossy8, _ = to_uint8(lossy, (svd.a, svd.b))
-    return lossy8
+    # lossy8, _ = to_uint8(lossy, (svd.a, svd.b))
+    # return lossy8
+
+    return lossy
 
 
 def _decompress_chunk(lossy, svd, rank=None):
@@ -213,7 +217,7 @@ def _decompress_chunk(lossy, svd, rank=None):
     rank = min(rank, svd.rank)
     rank = min(rank, svd.n_channels)
 
-    lossy = from_uint8(lossy, (svd.a, svd.b))
+    # lossy = from_uint8(lossy, (svd.a, svd.b))
     assert rank > 0
 
     return (U[:, :rank] @ np.diag(sigma[:rank]) @ lossy[:rank, :])
@@ -282,7 +286,7 @@ def compress_lossy(
 
         # Write the compressed chunk to disk.
         l = chunk_lossy.shape[1]
-        lossy[offset:offset + l, :] = chunk_lossy.T
+        lossy[offset:offset + l, :] = to_uint8(chunk_lossy.T, svd.ab)
         offset += l
 
     # Save the SVD info to a npz file.
@@ -323,13 +327,17 @@ class LossyReader:
         self.itemsize = 1
         self.dtype = np.uint8
 
+    def _decompress(self, lossy, rank=None):
+        lossy_float = from_uint8(lossy, self._svd.ab)
+        return _decompress_chunk(lossy_float, self._svd, rank=rank)
+
     def get(self, i0, i1, rank=None):
         lossy = self._lossy[i0:i1]
-        return decompress(lossy, self._svd, rank=rank)
+        return self._decompress(lossy, rank=rank)
 
     def __get_item__(self, idx):
         lossy = self._lossy[idx]
-        return decompress(lossy, self._svd)
+        return self._decompress(lossy)
 
 
 def decompress_lossy(path_lossy="file.lossy.npy", path_svd="file.svd.npz"):
@@ -339,27 +347,48 @@ def decompress_lossy(path_lossy="file.lossy.npy", path_svd="file.svd.npz"):
 
 
 def test():
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    plt.rcParams["figure.dpi"] = 140
+    plt.rcParams["axes.grid"] = False
+    sns.set_theme(style="white")
+
     EPHYS_DIR = Path("/home/cyrille/ephys/globus/KS023/")
     path_cbin = EPHYS_DIR / "raw.cbin"
     path_ch = EPHYS_DIR / "raw.ch"
 
     reader = decompress(path_cbin)
-    rank = 46
-    svd = excerpt_svd(reader, rank, 5)
+    rank = 40
+    chunks_excerpts = 3
 
-    raw = reader[:6000, :]
+    svd = excerpt_svd(reader, rank, chunks_excerpts)
+
+    raw = reader[:30000, :]
     nc = raw.shape[1]
-    lossy = _compress_chunk(raw, svd)
-    # reconst = _decompress_chunk(lossy, svd, rank=50)
+    compression = DOWNSAMPLE_FACTOR * 2 * nc / float(rank)
 
-    import matplotlib.pyplot as plt
+    lossy = _compress_chunk(raw, svd)
+    reconst = _decompress_chunk(lossy, svd, rank=rank)
+
+    # plt.figure()
+    # plt.hist(lossy.ravel(), bins=64, log=True)
+
+    lossy8, ab = to_uint8(lossy)
+    lossy_ = from_uint8(lossy8, ab)
+    reconst8 = _decompress_chunk(lossy_, svd, rank=rank)
+
     nrows = 2
     fix, axs = plt.subplots(nrows, 1, sharex=True)
+
     axs[0].imshow(_preprocess(raw), cmap="gray", aspect="auto")
     axs[0].set_title(f"original")
-    for i in range(1, nrows):
-        # rank = 50 * i
-        compression = DOWNSAMPLE_FACTOR * 2 * nc / float(rank)
-        axs[i].imshow(_decompress_chunk(lossy, svd, rank=rank), cmap="gray", aspect="auto")
-        axs[i].set_title(f"rank={rank}, compression={compression:.1f}x")
+
+    axs[1].imshow(reconst8, cmap="gray", aspect="auto")
+    axs[1].set_title(f"rank={rank}, compression={compression:.1f}x")
+
+    # for i in range(1, nrows):
+    #     # rank = 50 * i
+    #     compression = DOWNSAMPLE_FACTOR * 2 * nc / float(rank)
+    #     axs[i].imshow(_decompress_chunk(lossy, svd, rank=rank), cmap="gray", aspect="auto")
+    #     axs[i].set_title(f"rank={rank}, compression={compression:.1f}x")
     plt.show()
