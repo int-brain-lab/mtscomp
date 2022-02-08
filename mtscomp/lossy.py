@@ -18,12 +18,14 @@ import sys
 
 from tqdm import tqdm
 import numpy as np
+from numpy.linalg import inv
 from numpy.lib.format import open_memmap
 
 from .mtscomp import Bunch, decompress, Reader
 
 
-logger = logging.getLogger(('mtscomp'))
+logger = logging.getLogger('mtscomp')
+logger.setLevel(logging.DEBUG)
 
 
 #------------------------------------------------------------------------------
@@ -31,6 +33,7 @@ logger = logging.getLogger(('mtscomp'))
 #------------------------------------------------------------------------------
 
 DOWNSAMPLE_FACTOR = 6
+CHUNKS_EXCERPTS = 20
 
 FILE_EXTENSION_LOSSY = '.lossy.npy'
 FILE_EXTENSION_SVD = '.svd.npz'
@@ -42,23 +45,61 @@ FILE_EXTENSION_SVD = '.svd.npz'
 
 class SVD(Bunch):
     def __init__(
-            self, U, sigma, rank=None, a=1, b=0,
+            self, U, sigma, rank=None, ab=None,
             sample_rate=None, downsample_factor=DOWNSAMPLE_FACTOR):
         super(SVD, self).__init__()
         self.U = U
         self.n_channels = U.shape[0]
         assert sigma.shape == (self.n_channels,)
-        self.Usigma_inv = np.linalg.inv(U @ np.diag(sigma))
+        self.Usigma_inv = inv(U @ np.diag(sigma))
         assert self.Usigma_inv.shape == self.U.shape
         self.sigma = sigma
         self.rank = rank
-        self.a = a
-        self.b = b
+        self.ab = ab
         self.sample_rate = sample_rate
         self.downsample_factor = downsample_factor
 
+    def save(self, path):
+        assert self.U is not None
+        assert self.Usigma_inv is not None
+        assert self.sigma is not None
+        assert self.ab is not None
+        assert self.n_channels >= 1
+        assert self.rank >= 1
+        assert self.sample_rate > 0
+        assert self.downsample_factor >= 1
+
+        np.savez(
+            path,
+            U=self.U,
+            # Usigma_inv=self.Usigma_inv,
+            sigma=self.sigma,
+            ab=self.ab,
+
+            # NOTE: need to convert to regular arrays for np.savez
+            rank=np.array([self.rank]),
+            sample_rate=np.array([self.sample_rate]),
+            downsample_factor=np.array([self.downsample_factor]),
+        )
+
     def __repr__(self):
-        return f"<SVD n_channels={self.n_channels}, rank={self.rank}>"
+        # return f"<SVD n_channels={self.n_channels}, rank={self.rank}>"
+        return super(SVD, self).__repr__()
+
+
+def load_svd(path):
+    d = np.load(path)
+    svd = SVD(
+        U=d['U'],
+        # Usigma_inv=d['Usigma_inv'],
+        sigma=d['sigma'],
+        ab=d['ab'],
+        rank=int(d['rank'][0]),
+        sample_rate=d['sample_rate'][0],
+        downsample_factor=int(d['downsample_factor'][0]),
+    )
+    assert svd.n_channels >= 1
+    return svd
 
 
 #------------------------------------------------------------------------------
@@ -89,22 +130,36 @@ def _svd(x):
     return SVD(U, sigma)
 
 
-def _uint8_coefs(x):
+def _uint8_coefs(x, margin=.05):
     # k = .05
     # m, M = np.quantile(x, k), np.quantile(x, 1 - k)
+
     m, M = x.min(), x.max()
-    a = 255 / (M - m)
+    d = M - m
+    assert d > 0
+
+    m -= d * margin
+    M += d * margin
+
+    a = 255 / d
     b = m
     return a, b
 
 
 def to_uint8(x, ab=None):
     a, b = ab if ab is not None else _uint8_coefs(x)
+
     y = (x - b) * a
-    # x = y / a + b
-    # assert np.all((0 <= y) & (y <= 255))
+    # inverse: x = y / a + b
+
+    # assert np.all((0 <= y) & (y < 256))
+    overshoot = np.mean((y < 0) | (y >= 256))
+    if overshoot > 0:
+        logger.debug(
+            f"uint8 casting: clipping {overshoot:.1f}% of overshooting values", overshoot * 100)
+    y = np.clip(y, 0, 255)
+
     return y.astype(np.uint8), (a, b)
-    # return y, (a, b)
 
 
 def from_uint8(y, ab):
@@ -143,7 +198,8 @@ def _get_excerpts(reader, kept_chunks=20):
     skip = n_chunks // kept_chunks
     for chunk_idx, chunk_start, chunk_length in tqdm(
             islice(reader.iter_chunks(), 0, n_chunks + 1, skip),
-            total=n_chunks // skip, desc="extracting excerpts from the raw data"):
+            total=n_chunks // skip,
+            desc="extracting excerpts..."):
 
         chunk = reader.read_chunk(chunk_idx, chunk_start, chunk_length)
         # chunk is (ns, nc)
@@ -177,9 +233,6 @@ def excerpt_svd(reader, rank, kept_chunks=20):
     svd.downsample_factor = DOWNSAMPLE_FACTOR
     svd.rank = min(rank, svd.n_channels)
 
-    # NOTE: compute the uint8 scaling on the first second of data
-    svd.ab = _uint8_coefs(excerpts[:, :int(svd.sample_rate)])
-
     assert svd
     return svd
 
@@ -194,14 +247,10 @@ def _compress_chunk(raw, svd):
 
     rank = svd.rank
     assert rank > 0
-    assert svd.a != 0
 
     lossy = (svd.Usigma_inv @ pp)[:rank, :]
     # lossy is (nc, ns)
     assert lossy.shape[0] < lossy.shape[1]
-
-    # lossy8, _ = to_uint8(lossy, (svd.a, svd.b))
-    # return lossy8
 
     return lossy
 
@@ -217,54 +266,68 @@ def _decompress_chunk(lossy, svd, rank=None):
     rank = min(rank, svd.rank)
     rank = min(rank, svd.n_channels)
 
-    # lossy = from_uint8(lossy, (svd.a, svd.b))
     assert rank > 0
 
     return (U[:, :rank] @ np.diag(sigma[:rank]) @ lossy[:rank, :])
 
 
+#------------------------------------------------------------------------------
+# Compressor
+#------------------------------------------------------------------------------
+
 def compress_lossy(
-        path=None, cmeta=None, rank=None, max_chunks=0, downsampling_factor=None,
+        path_cbin=None, cmeta=None, rank=None, max_chunks=0,
+        chunks_excerpts=CHUNKS_EXCERPTS, downsampling_factor=DOWNSAMPLE_FACTOR,
+        overwrite=False, dry_run=False,
         out_lossy=None, out_svd=None):
 
     # Check arguments.
     assert rank, "The rank must be set"
-    assert path, "The raw ephys data file must be specified"
+    assert path_cbin, "The raw ephys data file must be specified"
 
-    if downsampling_factor is None:
-        downsampling_factor = DOWNSAMPLE_FACTOR
     assert downsampling_factor >= 1
+    assert chunks_excerpts >= 2
 
     # Create a mtscomp Reader.
-    reader = decompress(path, cmeta=cmeta)
+    reader = decompress(path_cbin, cmeta=cmeta)
+    sr = int(reader.sample_rate)
     ns = reader.n_samples
     nc = reader.n_channels
     n_chunks = reader.n_chunks if max_chunks == 0 else max_chunks
-    assert n_chunks > 0
-    assert rank <= nc, "The rank cannot exceed the number of channels"
 
-    # Compute the SVD on an excerpt of the data.
-    svd = excerpt_svd(reader, rank)
+    assert n_chunks > 0
+    assert sr > 0
+    assert ns > 0
+    assert nc > 0
+    assert rank <= nc, "The rank cannot exceed the number of channels"
 
     # Filenames.
     if out_lossy is None:
-        out_lossy = Path(path).with_suffix(FILE_EXTENSION_LOSSY)
+        out_lossy = Path(path_cbin).with_suffix(FILE_EXTENSION_LOSSY)
     assert out_lossy
 
     if out_svd is None:
-        out_svd = Path(path).with_suffix(FILE_EXTENSION_SVD)
+        out_svd = Path(path_cbin).with_suffix(FILE_EXTENSION_SVD)
     assert out_svd
 
+    if dry_run:
+        return out_lossy
+
+    # Compute the SVD on an excerpt of the data.
+    svd = excerpt_svd(reader, rank, kept_chunks=chunks_excerpts)
+
     # Create a new memmapped npy file
-    if out_lossy.exists():
+    if not overwrite and out_lossy.exists():
         raise IOError(f"File {out_lossy} already exists.")
-    shape = (ns // downsampling_factor, rank)
+    shape = (n_chunks * int(reader.sample_rate) // downsampling_factor, rank)
     lossy = open_memmap(out_lossy, 'w+', dtype=np.uint8, shape=shape)
 
     # Compress the data.
     offset = 0
-    for chunk_idx, chunk_start, chunk_length in \
-            tqdm(reader.iter_chunks(last_chunk=n_chunks - 1), total=n_chunks):
+    for chunk_idx, chunk_start, chunk_length in tqdm(
+            reader.iter_chunks(last_chunk=n_chunks - 1),
+            desc='compressing...',
+            total=n_chunks):
 
         # Decompress the chunk.
         raw = reader.read_chunk(chunk_idx, chunk_start, chunk_length)
@@ -274,23 +337,23 @@ def compress_lossy(
         nsc, _ = raw.shape
         assert _ == nc
 
-        # Process the chunk.
-        pp = _preprocess(raw)
-        # pp is (nc, ns)
-        assert pp.shape[0] < pp.shape[1]
-
         # Compress the chunk.
-        chunk_lossy = _compress_chunk(pp)
+        chunk_lossy = _compress_chunk(raw, svd)
         # chunk_lossy is (nc, ns)
         assert chunk_lossy.shape[0] < chunk_lossy.shape[1]
 
         # Write the compressed chunk to disk.
         l = chunk_lossy.shape[1]
-        lossy[offset:offset + l, :] = to_uint8(chunk_lossy.T, svd.ab)
+        lossy[offset:offset + l, :], ab = to_uint8(chunk_lossy.T, svd.ab)
+        # NOTE: keep the ab scaling factors for uint8 conversion only for the first chunk
+        if svd.ab is None:
+            svd.ab = ab
         offset += l
 
     # Save the SVD info to a npz file.
-    np.savez(out_svd, **SVD)
+    svd.save(out_svd)
+
+    return out_lossy
 
 
 #------------------------------------------------------------------------------
@@ -303,23 +366,33 @@ class LossyReader:
         self.path_svd = None
 
     def open(self, path_lossy=None, path_svd=None):
-        self.path_lossy = path_lossy
-        self.path_svd = path_svd
+        assert path_lossy
+
+        if path_svd is None:
+            path_svd = Path(path_lossy).with_suffix('').with_suffix('.svd.npz')
+
+        self.path_lossy = Path(path_lossy)
+        self.path_svd = Path(path_svd)
 
         assert self.path_lossy
         assert self.path_svd
+        assert self.path_lossy.exists()
+        assert self.path_svd.exists()
 
         self._lossy = open_memmap(path_lossy, 'r')
         # ns, nc
-        assert self._lossy.shape[1] > self._lossy.shape[0]
+        assert self._lossy.shape[0] > self._lossy.shape[1]
         assert self._lossy.dtype == np.uint8
 
-        self._svd = np.load(self.path_svd)
-        ds = self._svd.downsample_factor
+        self._svd = load_svd(self.path_svd)
+        self.downsample_factor = ds = self._svd.downsample_factor
+        self.sample_rate = self._svd.sample_rate
         assert ds >= 1
+        assert self._svd.ab is not None
 
         self.n_channels = self._svd.U.shape[0]
         self.n_samples = self._lossy.shape[0] * ds
+        self.duration = self.n_samples / float(self.sample_rate)
         self.ndim = 2
         self.shape = (self.n_samples, self.n_channels)
         self.size = self.n_samples * self.n_channels
@@ -328,67 +401,22 @@ class LossyReader:
         self.dtype = np.uint8
 
     def _decompress(self, lossy, rank=None):
-        lossy_float = from_uint8(lossy, self._svd.ab)
-        return _decompress_chunk(lossy_float, self._svd, rank=rank)
+        lossy_float = from_uint8(lossy, self._svd.ab).T
+        return _decompress_chunk(lossy_float, self._svd, rank=rank).T
 
-    def get(self, i0, i1, rank=None):
+    def get(self, t0, t1, rank=None):
+        ds = self._svd.downsample_factor
+        i0 = int(round(t0 * float(self.sample_rate) / ds))
+        i1 = int(round(t1 * float(self.sample_rate) / ds))
         lossy = self._lossy[i0:i1]
         return self._decompress(lossy, rank=rank)
 
-    def __get_item__(self, idx):
+    def __getitem__(self, idx):
         lossy = self._lossy[idx]
         return self._decompress(lossy)
 
 
-def decompress_lossy(path_lossy="file.lossy.npy", path_svd="file.svd.npz"):
+def decompress_lossy(path_lossy=None, path_svd=None):
     reader = LossyReader()
     reader.open(path_lossy, path_svd=path_svd)
     return reader
-
-
-def test():
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-    plt.rcParams["figure.dpi"] = 140
-    plt.rcParams["axes.grid"] = False
-    sns.set_theme(style="white")
-
-    EPHYS_DIR = Path("/home/cyrille/ephys/globus/KS023/")
-    path_cbin = EPHYS_DIR / "raw.cbin"
-    path_ch = EPHYS_DIR / "raw.ch"
-
-    reader = decompress(path_cbin)
-    rank = 40
-    chunks_excerpts = 3
-
-    svd = excerpt_svd(reader, rank, chunks_excerpts)
-
-    raw = reader[:30000, :]
-    nc = raw.shape[1]
-    compression = DOWNSAMPLE_FACTOR * 2 * nc / float(rank)
-
-    lossy = _compress_chunk(raw, svd)
-    reconst = _decompress_chunk(lossy, svd, rank=rank)
-
-    # plt.figure()
-    # plt.hist(lossy.ravel(), bins=64, log=True)
-
-    lossy8, ab = to_uint8(lossy)
-    lossy_ = from_uint8(lossy8, ab)
-    reconst8 = _decompress_chunk(lossy_, svd, rank=rank)
-
-    nrows = 2
-    fix, axs = plt.subplots(nrows, 1, sharex=True)
-
-    axs[0].imshow(_preprocess(raw), cmap="gray", aspect="auto")
-    axs[0].set_title(f"original")
-
-    axs[1].imshow(reconst8, cmap="gray", aspect="auto")
-    axs[1].set_title(f"rank={rank}, compression={compression:.1f}x")
-
-    # for i in range(1, nrows):
-    #     # rank = 50 * i
-    #     compression = DOWNSAMPLE_FACTOR * 2 * nc / float(rank)
-    #     axs[i].imshow(_decompress_chunk(lossy, svd, rank=rank), cmap="gray", aspect="auto")
-    #     axs[i].set_title(f"rank={rank}, compression={compression:.1f}x")
-    plt.show()
