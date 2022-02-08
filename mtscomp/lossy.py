@@ -37,6 +37,7 @@ CHUNKS_EXCERPTS = 20
 
 FILE_EXTENSION_LOSSY = '.lossy.npy'
 FILE_EXTENSION_SVD = '.svd.npz'
+UINT8_MARGIN = .05
 
 
 #------------------------------------------------------------------------------
@@ -115,7 +116,7 @@ def _car(x):
     return y
 
 
-def _downsample(x, factor=1):
+def _downsample(x, factor=DOWNSAMPLE_FACTOR):
     assert x.ndim == 2
     ns, nc = x.shape
     # ns, nc
@@ -130,9 +131,8 @@ def _svd(x):
     return SVD(U, sigma)
 
 
-def _uint8_coefs(x, margin=.05):
-    # k = .05
-    # m, M = np.quantile(x, k), np.quantile(x, 1 - k)
+def _uint8_coefs(x, margin=UINT8_MARGIN):
+    # m, M = np.quantile(x, UINT8_MARGIN), np.quantile(x, 1 - UINT8_MARGIN)
 
     m, M = x.min(), x.max()
     d = M - m
@@ -186,7 +186,7 @@ def _preprocess(raw):
     return pp
 
 
-def _get_excerpts(reader, kept_chunks=20):
+def _get_excerpts(reader, kept_chunks=CHUNKS_EXCERPTS):
     assert reader
     assert isinstance(reader, Reader)
     assert kept_chunks >= 2
@@ -219,7 +219,7 @@ def _get_excerpts(reader, kept_chunks=20):
     return excerpts
 
 
-def excerpt_svd(reader, rank, kept_chunks=20):
+def excerpt_svd(reader, rank, kept_chunks=CHUNKS_EXCERPTS):
     assert rank
     excerpts = _get_excerpts(reader, kept_chunks=kept_chunks)
     # excerpts is (nc, ns)
@@ -385,8 +385,11 @@ class LossyReader:
         assert self._lossy.dtype == np.uint8
 
         self._svd = load_svd(self.path_svd)
+        self.rank = self._svd.rank
         self.downsample_factor = ds = self._svd.downsample_factor
         self.sample_rate = self._svd.sample_rate
+
+        assert self.rank >= 1
         assert ds >= 1
         assert self._svd.ab is not None
 
@@ -399,6 +402,9 @@ class LossyReader:
         self.size_bytes = self._lossy.size * self._lossy.itemsize
         self.itemsize = 1
         self.dtype = np.uint8
+
+        size_original = 2 * self.n_channels * self.n_samples
+        self.compression = size_original / float(self.size_bytes)
 
     def _decompress(self, lossy, rank=None):
         lossy_float = from_uint8(lossy, self._svd.ab).T

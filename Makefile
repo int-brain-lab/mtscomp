@@ -15,7 +15,7 @@ lint:
 	flake8
 
 test: lint
-	py.test -vv --cov-report term-missing --cov=mtscomp tests.py
+	py.test -vv --cov-report term-missing --cov=mtscomp tests/
 
 build:
 	python setup.py sdist --formats=zip
