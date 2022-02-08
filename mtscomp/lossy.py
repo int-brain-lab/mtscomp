@@ -38,6 +38,8 @@ CHUNKS_EXCERPTS = 20
 FILE_EXTENSION_LOSSY = '.lossy.npy'
 FILE_EXTENSION_SVD = '.svd.npz'
 UINT8_MARGIN = .05
+DTYPE = np.uint8
+MAX_UINT8 = 255
 
 
 #------------------------------------------------------------------------------
@@ -121,7 +123,7 @@ def _downsample(x, factor=DOWNSAMPLE_FACTOR):
     ns, nc = x.shape
     # ns, nc
     assert x.shape[0] > x.shape[1]
-    y = x.T.reshape((nc, (ns - ns % factor) // factor, factor)).mean(axis=2)
+    y = x.T[:, :ns - ns % factor].reshape((nc, ns // factor, factor)).mean(axis=2)
     # nc, ns
     return y
 
@@ -141,7 +143,7 @@ def _uint8_coefs(x, margin=UINT8_MARGIN):
     m -= d * margin
     M += d * margin
 
-    a = 255 / d
+    a = MAX_UINT8 / d
     b = m
     return a, b
 
@@ -152,13 +154,13 @@ def to_uint8(x, ab=None):
     y = (x - b) * a
     # inverse: x = y / a + b
 
-    # assert np.all((0 <= y) & (y < 256))
-    overshoot = np.mean((y < 0) | (y >= 256))
+    overshoot = np.mean((y < 0) | (y > MAX_UINT8))
     if overshoot > 0:
-        logger.debug(f"uint8 casting: clipping {overshoot * 100:.3f}% of overshooting values")
-    y = np.clip(y, 0, 255)
+        logger.debug(
+            f"casting to {str(DTYPE)}: clipping {overshoot * 100:.3f}% of values")
+    y = np.clip(y, 0, MAX_UINT8)
 
-    return y.astype(np.uint8), (a, b)
+    return y.astype(DTYPE), (a, b)
 
 
 def from_uint8(y, ab):
@@ -194,11 +196,11 @@ def _get_excerpts(reader, kept_chunks=CHUNKS_EXCERPTS):
     n = 0
     n_chunks = reader.n_chunks
     assert reader.shape[0] > reader.shape[1]
-    skip = n_chunks // kept_chunks
+    skip = max(1, n_chunks // kept_chunks)
     for chunk_idx, chunk_start, chunk_length in tqdm(
             islice(reader.iter_chunks(), 0, n_chunks + 1, skip),
             total=n_chunks // skip,
-            desc="extracting excerpts..."):
+            desc="Extracting excerpts..."):
 
         chunk = reader.read_chunk(chunk_idx, chunk_start, chunk_length)
         # chunk is (ns, nc)
@@ -318,14 +320,14 @@ def compress_lossy(
     # Create a new memmapped npy file
     if not overwrite and out_lossy.exists():
         raise IOError(f"File {out_lossy} already exists.")
-    shape = (n_chunks * int(reader.sample_rate) // downsampling_factor, rank)
-    lossy = open_memmap(out_lossy, 'w+', dtype=np.uint8, shape=shape)
+    shape = (ns // downsampling_factor, rank)
+    lossy = open_memmap(out_lossy, 'w+', dtype=DTYPE, shape=shape)
 
     # Compress the data.
     offset = 0
     for chunk_idx, chunk_start, chunk_length in tqdm(
             reader.iter_chunks(last_chunk=n_chunks - 1),
-            desc='compressing...',
+            desc='Compressing (lossy)...',
             total=n_chunks):
 
         # Decompress the chunk.
@@ -343,11 +345,16 @@ def compress_lossy(
 
         # Write the compressed chunk to disk.
         l = chunk_lossy.shape[1]
+        assert offset + l <= shape[0]
         lossy[offset:offset + l, :], ab = to_uint8(chunk_lossy.T, svd.ab)
         # NOTE: keep the ab scaling factors for uint8 conversion only for the first chunk
         if svd.ab is None:
             svd.ab = ab
         offset += l
+
+    extra = shape[0] - offset
+    if extra > 0:
+        lossy[-extra:, :] = lossy[-extra - 1, :]
 
     # Save the SVD info to a npz file.
     svd.save(out_svd)
@@ -381,7 +388,7 @@ class LossyReader:
         self._lossy = open_memmap(path_lossy, 'r')
         # ns, nc
         assert self._lossy.shape[0] > self._lossy.shape[1]
-        assert self._lossy.dtype == np.uint8
+        assert self._lossy.dtype == DTYPE
 
         self._svd = load_svd(self.path_svd)
         self.rank = self._svd.rank
@@ -400,7 +407,7 @@ class LossyReader:
         self.size = self.n_samples * self.n_channels
         self.size_bytes = self._lossy.size * self._lossy.itemsize
         self.itemsize = 1
-        self.dtype = np.uint8
+        self.dtype = DTYPE
 
         size_original = 2 * self.n_channels * self.n_samples
         self.compression = size_original / float(self.size_bytes)
