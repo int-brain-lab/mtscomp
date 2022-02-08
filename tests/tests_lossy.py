@@ -94,9 +94,9 @@ def show_compare(lossless, lossy, t0, t1):
 # Tests
 #------------------------------------------------------------------------------
 
-def test_lossy():
+def test_lossy_local():
 
-    EPHYS_DIR = Path("/home/cyrille/ephys/globus/KS023/")
+    EPHYS_DIR = Path(__file__).parent
     path_cbin = EPHYS_DIR / "raw.cbin"
 
     rank = 40
@@ -108,23 +108,10 @@ def test_lossy():
         rank=rank,
         max_chunks=max_chunks,
         overwrite=True,
-        dry_run=True,
+        dry_run=False,
     )
 
     lossless = decompress(path_cbin)
     lossy = ml.decompress_lossy(out_lossy)
 
     show_compare(lossless, lossy, 0, .2)
-
-    # chunks_excerpts = 3
-    # svd = excerpt_svd(reader, rank, chunks_excerpts)
-
-    # nc = raw.shape[1]
-    # compression = DOWNSAMPLE_FACTOR * 2 * nc / float(rank)
-
-    # lossy = _compress_chunk(raw, svd)
-    # reconst = _decompress_chunk(lossy, svd, rank=rank)
-
-    # lossy8, ab = to_uint8(lossy)
-    # lossy_ = from_uint8(lossy8, ab)
-    # reconst8 = _decompress_chunk(lossy_, svd, rank=rank)

@@ -155,8 +155,7 @@ def to_uint8(x, ab=None):
     # assert np.all((0 <= y) & (y < 256))
     overshoot = np.mean((y < 0) | (y >= 256))
     if overshoot > 0:
-        logger.debug(
-            f"uint8 casting: clipping {overshoot:.1f}% of overshooting values", overshoot * 100)
+        logger.debug(f"uint8 casting: clipping {overshoot * 100:.3f}% of overshooting values")
     y = np.clip(y, 0, 255)
 
     return y.astype(np.uint8), (a, b)
