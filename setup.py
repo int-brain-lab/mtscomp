@@ -51,6 +51,7 @@ setup(
             'mtsdecomp=mtscomp:mtsdecomp',
             'mtsdesc=mtscomp:mtsdesc',
             'mtschop=mtscomp:mtschop',
+            'mtsloss=mtscomp.lossy:mtsloss',
         ],
     },
     include_package_data=True,

@@ -21,7 +21,7 @@ import numpy as np
 from numpy.linalg import inv
 from numpy.lib.format import open_memmap
 
-from .mtscomp import Bunch, decompress, Reader
+from .mtscomp import Bunch, decompress, Reader, add_default_handler
 
 
 logger = logging.getLogger('mtscomp')
@@ -278,13 +278,16 @@ def _decompress_chunk(lossy, svd, rank=None):
 
 def compress_lossy(
         path_cbin=None, cmeta=None, rank=None, max_chunks=0,
-        chunks_excerpts=CHUNKS_EXCERPTS, downsampling_factor=DOWNSAMPLE_FACTOR,
+        chunks_excerpts=None, downsampling_factor=None,
         overwrite=False, dry_run=False,
         out_lossy=None, out_svd=None):
 
     # Check arguments.
     assert rank, "The rank must be set"
     assert path_cbin, "The raw ephys data file must be specified"
+
+    chunks_excerpts = chunks_excerpts or CHUNKS_EXCERPTS
+    downsampling_factor = downsampling_factor or DOWNSAMPLE_FACTOR
 
     assert downsampling_factor >= 1
     assert chunks_excerpts >= 2
@@ -295,6 +298,8 @@ def compress_lossy(
     ns = reader.n_samples
     nc = reader.n_channels
     n_chunks = reader.n_chunks if max_chunks == 0 else max_chunks
+    if max_chunks:
+        ns = max_chunks * sr  # NOTE: assume 1-second chunks
 
     assert n_chunks > 0
     assert sr > 0
@@ -314,14 +319,14 @@ def compress_lossy(
     if dry_run:
         return out_lossy
 
-    # Compute the SVD on an excerpt of the data.
-    svd = excerpt_svd(reader, rank, kept_chunks=chunks_excerpts)
-
     # Create a new memmapped npy file
     if not overwrite and out_lossy.exists():
         raise IOError(f"File {out_lossy} already exists.")
     shape = (ns // downsampling_factor, rank)
     lossy = open_memmap(out_lossy, 'w+', dtype=DTYPE, shape=shape)
+
+    # Compute the SVD on an excerpt of the data.
+    svd = excerpt_svd(reader, rank, kept_chunks=chunks_excerpts)
 
     # Compress the data.
     offset = 0
@@ -432,3 +437,57 @@ def decompress_lossy(path_lossy=None, path_svd=None):
     reader = LossyReader()
     reader.open(path_lossy, path_svd=path_svd)
     return reader
+
+
+#------------------------------------------------------------------------------
+# Command-line API: mtscomp
+#------------------------------------------------------------------------------
+
+def mtsloss_parser():
+    """Command-line interface to lossy-compress a .cbin file."""
+    parser = argparse.ArgumentParser(description='Lossy compression of .cbin files.')
+
+    parser.add_argument(
+        'path', type=str, help='input path of a .cbin file')
+
+    parser.add_argument(
+        'out', type=str, nargs='?',
+        help='output path of the lossy-compressed file (.lossy.npy)')
+
+    parser.add_argument(
+        'outsvd', type=str, nargs='?',
+        help='output path of the compression metadata SVD file (.svd.npz)')
+
+    parser.add_argument(
+        '--rank', type=int, help='number of SVD components to keep during compression')
+
+    parser.add_argument(
+        '--excerpts', type=int, help='number of chunks to use when computing the SVD')
+
+    parser.add_argument('--max-chunks', type=int, help='maximum number of chunks to compress')
+
+    parser.add_argument('--overwrite', action='store_true', help='overwrite existing files')
+
+    parser.add_argument('--dry', action='store_true', help='dry run')
+
+    parser.add_argument('-v', '--debug', action='store_true', help='verbose')
+
+    return parser
+
+
+def mtsloss(args=None):
+    """Compress a file."""
+    parser = mtsloss_parser()
+    pargs = parser.parse_args(args)
+    add_default_handler('DEBUG' if pargs.debug else 'INFO')
+
+    compress_lossy(
+        path_cbin=pargs.path,
+        out_lossy=pargs.out,
+        out_svd=pargs.outsvd,
+        chunks_excerpts=pargs.excerpts,
+        rank=pargs.rank,
+        max_chunks=pargs.max_chunks,
+        overwrite=pargs.overwrite,
+        dry_run=pargs.dry,
+    )
