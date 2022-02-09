@@ -48,7 +48,7 @@ MAX_UINT8 = 255
 
 class SVD(Bunch):
     def __init__(
-            self, U, sigma, rank=None, ab=None,
+            self, U, sigma, rank=None, ab=None, minmax=None, q01=None,
             sample_rate=None, downsample_factor=DOWNSAMPLE_FACTOR):
         super(SVD, self).__init__()
         self.U = U
@@ -61,6 +61,8 @@ class SVD(Bunch):
         self.ab = ab
         self.sample_rate = sample_rate
         self.downsample_factor = downsample_factor
+        self.minmax = minmax
+        self.q01 = q01
 
     def save(self, path):
         assert self.U is not None
@@ -71,6 +73,8 @@ class SVD(Bunch):
         assert self.rank >= 1
         assert self.sample_rate > 0
         assert self.downsample_factor >= 1
+        assert self.minmax is not None
+        assert self.q01 is not None
 
         np.savez(
             path,
@@ -78,6 +82,8 @@ class SVD(Bunch):
             # Usigma_inv=self.Usigma_inv,
             sigma=self.sigma,
             ab=self.ab,
+            minmax=np.array(self.minmax),
+            q01=np.array(self.q01),
 
             # NOTE: need to convert to regular arrays for np.savez
             rank=np.array([self.rank]),
@@ -86,8 +92,8 @@ class SVD(Bunch):
         )
 
     def __repr__(self):
-        # return f"<SVD n_channels={self.n_channels}, rank={self.rank}>"
-        return super(SVD, self).__repr__()
+        return f"<SVD n_channels={self.n_channels}, rank={self.rank}>"
+        # return super(SVD, self).__repr__()
 
 
 def load_svd(path):
@@ -100,6 +106,8 @@ def load_svd(path):
         rank=int(d['rank'][0]),
         sample_rate=d['sample_rate'][0],
         downsample_factor=int(d['downsample_factor'][0]),
+        minmax=d['minmax'],
+        q01=d['q01'],
     )
     assert svd.n_channels >= 1
     return svd
@@ -134,8 +142,8 @@ def _svd(x):
 
 
 def _uint8_coefs(x, margin=UINT8_MARGIN):
-    # m, M = np.quantile(x, UINT8_MARGIN), np.quantile(x, 1 - UINT8_MARGIN)
-
+    # k = .01
+    # m, M = np.quantile(x, k), np.quantile(x, 1 - k)
     m, M = x.min(), x.max()
     d = M - m
     assert d > 0
@@ -230,6 +238,10 @@ def excerpt_svd(reader, rank, kept_chunks=CHUNKS_EXCERPTS):
     svd = _svd(excerpts)
     assert svd.U.shape[0] == reader.n_channels
 
+    svd.minmax = (excerpts.min(), excerpts.max())
+    k = .01
+    svd.q01 = (np.quantile(excerpts.ravel(), k), np.quantile(excerpts.ravel(), 1 - k))
+
     svd.sample_rate = reader.sample_rate
     svd.downsample_factor = DOWNSAMPLE_FACTOR
     svd.rank = min(rank, svd.n_channels)
@@ -269,7 +281,10 @@ def _decompress_chunk(lossy, svd, rank=None):
 
     assert rank > 0
 
-    return (U[:, :rank] @ np.diag(sigma[:rank]) @ lossy[:rank, :])
+    # arr is (nc, ns)
+    arr = (U[:, :rank] @ np.diag(sigma[:rank]) @ lossy[:rank, :])
+
+    return arr
 
 
 #------------------------------------------------------------------------------
@@ -413,6 +428,7 @@ class LossyReader:
         self.size_bytes = self._lossy.size * self._lossy.itemsize
         self.itemsize = 1
         self.dtype = DTYPE
+        self.minmax = self._svd.minmax  # used for cmap scaling visualization
 
         size_original = 2 * self.n_channels * self.n_samples
         self.compression = size_original / float(self.size_bytes)
@@ -421,12 +437,20 @@ class LossyReader:
         lossy_float = from_uint8(lossy, self._svd.ab).T
         return _decompress_chunk(lossy_float, self._svd, rank=rank).T
 
-    def get(self, t0, t1, rank=None):
+    def get(self, t0, t1, rank=None, cast_to_uint8=False):
         ds = self._svd.downsample_factor
         i0 = int(round(t0 * float(self.sample_rate) / ds))
         i1 = int(round(t1 * float(self.sample_rate) / ds))
         lossy = self._lossy[i0:i1]
-        return self._decompress(lossy, rank=rank)
+        arr = self._decompress(lossy, rank=rank)
+        if cast_to_uint8:
+            m, M = self.minmax
+            d = M - m
+            assert d > 0
+            a = MAX_UINT8 / d
+            b = m
+            arr, _ = to_uint8(arr, ab=(a, b))
+        return arr
 
     def __getitem__(self, idx):
         lossy = self._lossy[idx]
