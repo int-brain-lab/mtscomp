@@ -109,7 +109,7 @@ def _prepare_compare(lossless, lossy, t0, t1):
     i0 = int(round(t0 * sr))
     i1 = int(round(t1 * sr))
 
-    lossless_img = ml._preprocess(lossless[i0:i1])
+    lossless_img = ml._preprocess_default(lossless[i0:i1])
     lossy_img = lossy.get(t0, t1).T
 
     mM = lossy._svd.minmax

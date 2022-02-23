@@ -3,9 +3,9 @@
 """SVD-based raw ephys data lossy compression."""
 
 
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
 # Imports
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
 
 import argparse
 from functools import lru_cache
@@ -28,9 +28,9 @@ logger = logging.getLogger('mtscomp')
 logger.setLevel(logging.DEBUG)
 
 
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
 # Constants
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
 
 DOWNSAMPLE_FACTOR = 6
 CHUNKS_EXCERPTS = 20
@@ -42,29 +42,39 @@ DTYPE = np.uint8
 MAX_UINT8 = 255
 
 
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
 # Util classes
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
 
 class SVD(Bunch):
+    """A special dictionary that holds information about lossy compression.
+
+    It mostly holds the SVD matrices necessary to reconstruct the original signal, as well
+    as scaling factors to resample to/from uint8.
+
+    """
+
     def __init__(
             self, U, sigma, rank=None, ab=None, minmax=None, q01=None,
             sample_rate=None, downsample_factor=DOWNSAMPLE_FACTOR):
         super(SVD, self).__init__()
-        self.U = U
-        self.n_channels = U.shape[0]
+        self.U = U  # the "U" in the "U @ sigma @ V" SVD decomposition
+        self.n_channels = U.shape[0]  # number of channels
         assert sigma.shape == (self.n_channels,)
-        self.Usigma_inv = inv(U @ np.diag(sigma))
+
+        self.Usigma_inv = inv(U @ np.diag(sigma))  # inverse of "U @ sigma"
         assert self.Usigma_inv.shape == self.U.shape
-        self.sigma = sigma
-        self.rank = rank
-        self.ab = ab
-        self.sample_rate = sample_rate
-        self.downsample_factor = downsample_factor
-        self.minmax = minmax
-        self.q01 = q01
+
+        self.sigma = sigma  # the diagonal of the SVD decomposition
+        self.rank = rank  # the number of SVD components to keep
+        self.ab = ab  # the uint8 scaling factors "y = ax+b"
+        self.sample_rate = sample_rate  # the sampling rate
+        self.downsample_factor = downsample_factor  # the downsample factor, an integer
+        self.minmax = minmax  # the min and max of the signal across all channels
+        self.q01 = q01  # the 0.01 and 0.99 quantiles of the signal (unused for now)
 
     def save(self, path):
+        """Save this SVD object to a .npz file."""
         assert self.U is not None
         assert self.Usigma_inv is not None
         assert self.sigma is not None
@@ -79,7 +89,6 @@ class SVD(Bunch):
         np.savez(
             path,
             U=self.U,
-            # Usigma_inv=self.Usigma_inv,
             sigma=self.sigma,
             ab=self.ab,
             minmax=np.array(self.minmax),
@@ -93,14 +102,13 @@ class SVD(Bunch):
 
     def __repr__(self):
         return f"<SVD n_channels={self.n_channels}, rank={self.rank}>"
-        # return super(SVD, self).__repr__()
 
 
 def load_svd(path):
+    """Load a .npz file containing the SVD information, and return a SVD object."""
     d = np.load(path)
     svd = SVD(
         U=d['U'],
-        # Usigma_inv=d['Usigma_inv'],
         sigma=d['sigma'],
         ab=d['ab'],
         rank=int(d['rank'][0]),
@@ -113,11 +121,20 @@ def load_svd(path):
     return svd
 
 
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
 # Util functions
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
 
 def _car(x):
+    """Common average referencing (remove the mean along time).
+
+    Parameters
+    ----------
+
+    x : ndarray (n_samples, n_channels)
+        Signal.
+
+    """
     assert x.ndim == 2
     # ns, nc
     assert x.shape[0] > x.shape[1]
@@ -127,6 +144,7 @@ def _car(x):
 
 
 def _downsample(x, factor=DOWNSAMPLE_FACTOR):
+    """Hard downsampling."""
     assert x.ndim == 2
     ns, nc = x.shape
     # ns, nc
@@ -137,11 +155,25 @@ def _downsample(x, factor=DOWNSAMPLE_FACTOR):
 
 
 def _svd(x):
+    """Compute the SVD of a signal. Return a SVD object.
+
+    Parameters
+    ----------
+
+    x : ndarray (n_channels, n_samples)
+        Signal.
+
+    """
+    assert x.ndim == 2
+    # nc, ns
+    assert x.shape[0] < x.shape[1]
+
     U, sigma, _ = np.linalg.svd(x, full_matrices=False)
     return SVD(U, sigma)
 
 
 def _uint8_coefs(x, margin=UINT8_MARGIN):
+    """Compute the (a, b) rescaling coefficients to downsample a signal to uint8."""
     # k = .01
     # m, M = np.quantile(x, k), np.quantile(x, 1 - k)
     m, M = x.min(), x.max()
@@ -157,6 +189,7 @@ def _uint8_coefs(x, margin=UINT8_MARGIN):
 
 
 def to_uint8(x, ab=None):
+    """Downsample a signal to uint8. The rescaling coefficients can be passed or recomputed."""
     a, b = ab if ab is not None else _uint8_coefs(x)
 
     y = (x - b) * a
@@ -172,15 +205,33 @@ def to_uint8(x, ab=None):
 
 
 def from_uint8(y, ab):
+    """Resample a uint8 signal to a float32 signal, using the rescaling coefficients."""
     a, b = ab
     return y.astype(np.float32) / a + b
 
 
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
 # Processing functions
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
 
-def _preprocess(raw):
+def _preprocess_default(raw):
+    """Default preprocessing function: CAR and 6x downsampling.
+
+    Note: this function transposes the array.
+
+    Parameters
+    ----------
+
+    raw : ndarray (n_samples, n_channels)
+        Signal.
+
+    Returns
+    -------
+
+    pp : ndarray (n_channels, n_samples)
+
+    """
+
     assert raw.shape[0] > raw.shape[1]
     # raw is (ns, nc)
 
@@ -195,10 +246,31 @@ def _preprocess(raw):
     return pp
 
 
-def _get_excerpts(reader, kept_chunks=CHUNKS_EXCERPTS):
+def _get_excerpts(reader, kept_chunks=CHUNKS_EXCERPTS, preprocess=None):
+    """Get evenly-spaced excerpts of a mtscomp-compressed file.
+
+    Parameters
+    ----------
+
+    reader : mtscomp.Reader
+        The input array.
+    kept_chunks : int (default: 20)
+        The number of 1-second excerpts to keep.
+    preprocess : function `(n_samples, n_channels) int16 => (n_channels, n_samples) float32`
+        The preprocessing function to run on each 1-second excerpt.
+
+    Returns
+    -------
+
+    excerpts : ndarray (n_channels, n_samples_excerpts)
+        The excerpts concatenated along the time axis.
+
+    """
+
     assert reader
     assert isinstance(reader, Reader)
     assert kept_chunks >= 2
+    preprocess = preprocess or _preprocess_default
 
     arrs = []
     n = 0
@@ -214,7 +286,7 @@ def _get_excerpts(reader, kept_chunks=CHUNKS_EXCERPTS):
         # chunk is (ns, nc)
         assert chunk.shape[0] > chunk.shape[1]
 
-        pp = _preprocess(chunk)
+        pp = preprocess(chunk)
         # pp is (nc, ns)
         assert chunk.shape[0] > chunk.shape[1]
 
@@ -228,9 +300,31 @@ def _get_excerpts(reader, kept_chunks=CHUNKS_EXCERPTS):
     return excerpts
 
 
-def excerpt_svd(reader, rank, kept_chunks=CHUNKS_EXCERPTS):
+def excerpt_svd(reader, rank, kept_chunks=CHUNKS_EXCERPTS, preprocess=None):
+    """Compute the SVD on evenly-spaced excerpts of a mtscomp-compressed file.
+
+    Parameters
+    ----------
+
+    reader : mtscomp.Reader
+        The input array.
+    rank : int
+        The number of SVD components to keep.
+    kept_chunks : int (default: 20)
+        The number of 1-second excerpts to keep.
+    preprocess : function `(n_samples, n_channels) int16 => (n_channels, n_samples) float32`
+        The preprocessing function to run on each 1-second excerpt.
+
+    Returns
+    -------
+
+    svd : SVD instance
+        An object containg the SVD information.
+
+    """
+
     assert rank
-    excerpts = _get_excerpts(reader, kept_chunks=kept_chunks)
+    excerpts = _get_excerpts(reader, kept_chunks=kept_chunks, preprocess=preprocess)
     # excerpts is (nc, ns)
     assert excerpts.shape[0] < excerpts.shape[1]
 
@@ -250,11 +344,32 @@ def excerpt_svd(reader, rank, kept_chunks=CHUNKS_EXCERPTS):
     return svd
 
 
-def _compress_chunk(raw, svd):
+def _compress_chunk(raw, svd, preprocess=None):
+    """Compress a chunk of data.
+
+    Parameters
+    ----------
+
+    raw : ndarray (n_samples, n_channels)
+        The input array.
+    svd : SVD instance
+        The SVD object returned by `excerpt_svd()`
+    preprocess : function `(n_samples, n_channels) int16 => (n_channels, n_samples) float32`
+        The preprocessing function to run on each 1-second excerpt.
+
+    Returns
+    -------
+
+    lossy : ndarray (rank, n_samples)
+        The compressed signal.
+
+    """
+
     # raw is (ns, nc)
     assert raw.shape[0] > raw.shape[1]
+    preprocess = preprocess or _preprocess_default
 
-    pp = _preprocess(raw)
+    pp = preprocess(raw)
     # pp is (nc, ns)
     assert pp.shape[0] < pp.shape[1]
 
@@ -262,13 +377,34 @@ def _compress_chunk(raw, svd):
     assert rank > 0
 
     lossy = (svd.Usigma_inv @ pp)[:rank, :]
-    # lossy is (nc, ns)
+    # lossy is (rank, ns)
     assert lossy.shape[0] < lossy.shape[1]
 
     return lossy
 
 
 def _decompress_chunk(lossy, svd, rank=None):
+    """Decompress a chunk of data.
+
+    Parameters
+    ----------
+
+    lossy : ndarray (rank, n_samples)
+        The lossy-compressed array.
+    svd : SVD instance
+        The SVD object returned by `excerpt_svd()`
+    rank : int (default: None)
+        If set, override the SVD rank (must be lower than the SVD rank).
+        Used to simulate reconstruction with a smaller rank.
+
+    Returns
+    -------
+
+    arr : ndarray (n_channels, n_samples)
+        The reconstructed signal.
+
+    """
+
     # lossy is (nc, ns)
     assert lossy.shape[0] < lossy.shape[1]
 
@@ -287,19 +423,59 @@ def _decompress_chunk(lossy, svd, rank=None):
     return arr
 
 
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
 # Compressor
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
 
 def compress_lossy(
         path_cbin=None, cmeta=None, rank=None, max_chunks=0,
         chunks_excerpts=None, downsampling_factor=None,
-        overwrite=False, dry_run=False,
+        preprocess=None, overwrite=False, dry_run=False,
         out_lossy=None, out_svd=None):
+    """Compress a .cbin file.
+
+    Parameters
+    ----------
+
+    path_cbin : str or Path
+        Path to the compressed data binary file (typically ̀.cbin` file extension).
+    cmeta : str or Path (default: None)
+        Path to the compression header JSON file (typically `.ch` file extension).
+    rank : int (mandatory)
+        Number of SVD components to keep in the compressed file.
+    max_chunks : int (default: None)
+        Maximum number of chunks to compress (use None to compress the entire file).
+    chunks_excerpts : int (default: 20)
+        Number of evenly-spaced 1-second chunks to extract to compute the SVD.
+    downsampling_factor : int
+        Number of times the original will be downsampled.
+    preprocess : function `(n_samples, n_channels) int16 => (n_channels, n_samples) float32`
+
+    svd : SVD instance
+        The SVD object returned by `excerpt_svd()`
+    preprocess : function `(n_samples, n_channels) int16 => (n_channels, n_samples) float32`
+        The preprocessing function to run on each chunk.
+    overwrite : bool (default: False)
+        Whether the lossy compressed files may be overwritten.
+    dry_run : bool (default: False)
+        If true, the lossy compressed files will not be written.
+    out_lossy : str or Path
+        Path to the output `.lossy.npy` file.
+    out_svd : str or Path
+        Path to the output `.svd.npz` SVD file.
+
+    Returns
+    -------
+
+    out_lossy : str or Path
+        Path to the output `.lossy.npy` file.
+
+    """
 
     # Check arguments.
     assert rank, "The rank must be set"
     assert path_cbin, "The raw ephys data file must be specified"
+    preprocess = preprocess or _preprocess_default
 
     chunks_excerpts = chunks_excerpts or CHUNKS_EXCERPTS
     downsampling_factor = downsampling_factor or DOWNSAMPLE_FACTOR
@@ -341,7 +517,7 @@ def compress_lossy(
     lossy = open_memmap(out_lossy, 'w+', dtype=DTYPE, shape=shape)
 
     # Compute the SVD on an excerpt of the data.
-    svd = excerpt_svd(reader, rank, kept_chunks=chunks_excerpts)
+    svd = excerpt_svd(reader, rank, kept_chunks=chunks_excerpts, preprocess=preprocess)
 
     # Compress the data.
     offset = 0
@@ -359,7 +535,7 @@ def compress_lossy(
         assert _ == nc
 
         # Compress the chunk.
-        chunk_lossy = _compress_chunk(raw, svd)
+        chunk_lossy = _compress_chunk(raw, svd, preprocess=preprocess)
         # chunk_lossy is (nc, ns)
         assert chunk_lossy.shape[0] < chunk_lossy.shape[1]
 
@@ -382,16 +558,29 @@ def compress_lossy(
     return out_lossy
 
 
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
 # Decompressor
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
 
 class LossyReader:
+    """Array-like interface to the reconstruction of a lossy compressed file."""
+
     def __init__(self):
         self.path_lossy = None
         self.path_svd = None
 
     def open(self, path_lossy=None, path_svd=None):
+        """Open a .lossy.npy/.svd.npz pair of files.
+
+        Parameters
+        ----------
+
+        path_lossy : str or Path
+            Path to the lossy compressed file (typically ̀`.lossy.npy` file extension).
+        path_svd : str or Path (default: None)
+            Path to the lossy compressed SVD file (typically ̀`.svd.npz` file extension).
+
+        """
         assert path_lossy
 
         if path_svd is None:
@@ -434,10 +623,49 @@ class LossyReader:
         self.compression = size_original / float(self.size_bytes)
 
     def _decompress(self, lossy, rank=None):
+        """Decompress a chunk.
+
+        Parameters
+        ----------
+
+        lossy : ndarray (rank, n_samples)
+            Compressed array.
+        rank : int (default: None)
+            If set, overrides the number of components to reuse for the reconstruction.
+
+        Returns
+        -------
+
+        arr : ndarray (n_channels, n_samples)
+            The reconstructed signal.
+
+        """
+
         lossy_float = from_uint8(lossy, self._svd.ab).T
         return _decompress_chunk(lossy_float, self._svd, rank=rank).T
 
     def get(self, t0, t1, rank=None, cast_to_uint8=False):
+        """Return the reconstructed signal between two times (in seconds).
+
+        Parameters
+        ----------
+
+        t0 : float
+            Start time.
+        t1 : float
+            End time.
+        rank : int (default: None)
+            If set, overrides the number of components to reuse for the reconstruction.
+        cast_to_uint8 : bool (default: False)
+            Whether the reconstructed signal should be downsampled to uint8 (for viz purposes).
+
+        Returns
+        -------
+
+        arr : ndarray (n_channels, n_samples)
+            The reconstructed signal.
+
+        """
         ds = self._svd.downsample_factor
         i0 = int(round(t0 * float(self.sample_rate) / ds))
         i1 = int(round(t1 * float(self.sample_rate) / ds))
@@ -453,19 +681,38 @@ class LossyReader:
         return arr
 
     def __getitem__(self, idx):
+        """Array-like interface."""
         lossy = self._lossy[idx]
         return self._decompress(lossy)
 
 
 def decompress_lossy(path_lossy=None, path_svd=None):
+    """Decompress a .lossy.npy/.svd.npz pair of lossy compressed files.
+
+    Parameters
+    ----------
+
+    path_lossy : str or Path
+        Path to the `.lossy.npy` file.
+    path_svd : str or Path (default: None)
+        Path to the `.svd.npz` SVD file.
+
+    Returns
+    -------
+
+    reader : LossyReader instance
+        An array-like interface to the reconstructed signal.
+
+    """
+
     reader = LossyReader()
     reader.open(path_lossy, path_svd=path_svd)
     return reader
 
 
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
 # Command-line API: mtscomp
-#------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------------------------
 
 def mtsloss_parser():
     """Command-line interface to lossy-compress a .cbin file."""

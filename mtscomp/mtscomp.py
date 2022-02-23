@@ -428,9 +428,9 @@ class Writer:
         ----------
 
         out : str or Path
-            Path to the compressed data binary file (typically ̀.cbin` file extension).
+            Path to the compressed data binary file (typically ̀`.cbin` file extension).
         outmeta : str or Path
-            Path to the compression header JSON file (typicall `.ch` file extension).
+            Path to the compression header JSON file (typically `.ch` file extension).
 
         Returns
         -------
