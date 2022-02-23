@@ -243,7 +243,7 @@ def preprocess(raw):
     assert pp.shape[0] > pp.shape[1]
 
     pp = ml._downsample(pp, factor=ml.DOWNSAMPLE_FACTOR)
-    # pp is (nc, ns)
+    # pp is (nc', ns)
     assert pp.shape[0] < pp.shape[1]
 
     return pp

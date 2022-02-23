@@ -240,7 +240,7 @@ def _preprocess_default(raw):
     assert pp.shape[0] > pp.shape[1]
 
     pp = _downsample(pp, factor=DOWNSAMPLE_FACTOR)
-    # pp is (nc, ns)
+    # pp is (nc', ns)
     assert pp.shape[0] < pp.shape[1]
 
     return pp
@@ -579,7 +579,9 @@ def compress_lossy(
 
         # Write the compressed chunk to disk.
         l = chunk_lossy.shape[1]
-        assert offset + l <= shape[0]
+        k = min(l, shape[0] - offset)
+        assert k <= l
+        chunk_lossy = chunk_lossy[:, :k]
         lossy[offset:offset + l, :], ab = to_uint8(chunk_lossy.T, svd.ab)
         # NOTE: keep the ab scaling factors for uint8 conversion only for the first chunk
         if svd.ab is None:
