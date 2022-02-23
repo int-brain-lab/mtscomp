@@ -102,7 +102,6 @@ def _show_img(ax, x, title, vmin=None, vmax=None):
 
 
 def _prepare_compare(lossless, lossy, t0, t1):
-    assert isinstance(lossless, Reader)
     assert isinstance(lossy, ml.LossyReader)
 
     sr = lossless.sample_rate
@@ -122,7 +121,6 @@ def _compute_error(lossless_img, lossy_img, threshold=ERROR_THRESHOLD):
 
 
 def show_compare(lossless, lossy, t0, t1, threshold=ERROR_THRESHOLD, do_show=True):
-    assert isinstance(lossless, Reader)
     assert isinstance(lossy, ml.LossyReader)
 
     lossless_img, lossy_img, (m, M) = _prepare_compare(lossless, lossy, t0, t1)
@@ -216,4 +214,66 @@ def test_lossy_local():
     hw = .1
     t = hw
     err = show_compare(lossless, lossy, t - hw, t + hw, do_show=False)
+    assert err < 1
+
+
+def preprocess(raw):
+    """Default preprocessing function: CAR and 6x downsampling.
+
+    Note: this function transposes the array.
+
+    Parameters
+    ----------
+
+    raw : ndarray (n_samples, n_channels)
+        Signal.
+
+    Returns
+    -------
+
+    pp : ndarray (n_channels, n_samples)
+
+    """
+
+    assert raw.shape[0] > raw.shape[1]
+    # raw is (ns, nc)
+
+    pp = ml._car(raw)
+    # pp is (ns, nc)
+    assert pp.shape[0] > pp.shape[1]
+
+    pp = ml._downsample(pp, factor=ml.DOWNSAMPLE_FACTOR)
+    # pp is (nc, ns)
+    assert pp.shape[0] < pp.shape[1]
+
+    return pp
+
+
+def test_lossy_array(tmp_path):
+    path_lossy = tmp_path / 'sine.lossy.npy'
+    path_svd = tmp_path / 'sine.svd.npz'
+
+    # Generate an artificial binary file.
+    arr = colored_sine()
+    assert arr.shape == (n_samples, n_channels)
+    M = np.abs(arr).max()
+
+    # mtscomp-like interface for a regular NumPy array.
+    reader = ml.ArrayReader(arr, sample_rate=sample_rate)
+
+    # Compress it (lossy).
+    rank = 8
+    path_lossy = ml.compress_lossy(
+        reader=reader, rank=rank, out_lossy=path_lossy, out_svd=path_svd,
+        preprocess=preprocess)
+    assert path_lossy.exists()
+    assert np.load(path_lossy).shape == (n_samples // ml.DOWNSAMPLE_FACTOR, rank)
+
+    # Decompress.
+    lossy = ml.decompress_lossy(path_lossy)
+    assert arr.ndim == lossy.ndim
+    assert arr.shape[1] == lossy.shape[1]
+    assert arr.shape[0] - lossy.shape[0] == arr.shape[0] % ml.DOWNSAMPLE_FACTOR
+
+    err = show_compare(reader, lossy, 0, duration, threshold=.1, do_show=False)
     assert err < 1

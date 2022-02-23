@@ -268,7 +268,6 @@ def _get_excerpts(reader, kept_chunks=CHUNKS_EXCERPTS, preprocess=None):
     """
 
     assert reader
-    assert isinstance(reader, Reader)
     assert kept_chunks >= 2
     preprocess = preprocess or _preprocess_default
 
@@ -424,15 +423,50 @@ def _decompress_chunk(lossy, svd, rank=None):
 
 
 #-------------------------------------------------------------------------------------------------
+# Mock Reader classes
+#-------------------------------------------------------------------------------------------------
+
+class ArrayReader:
+    """Wrapper to an array-like object, that provides the same interface as a mtscomp.Reader."""
+
+    def __init__(self, arr, sample_rate=None):
+        assert sample_rate > 0
+        self.sample_rate = sample_rate
+        self.chunk_length = int(np.ceil(sample_rate))
+
+        self._arr = arr
+        assert arr.ndim == 2
+        # arr shape is (n_samples, n_channels)
+        assert arr.shape[0] > arr.shape[1]
+        self.shape = arr.shape
+        self.n_samples, self.n_channels = self.shape
+        self.n_chunks = int(np.ceil(self.n_samples / float(sample_rate)))
+
+    def iter_chunks(self, last_chunk=None):
+        offset = 0
+        n = (last_chunk + 1) if last_chunk else self.n_chunks
+        for i in range(self.n_chunks):
+            # (chunk_idx, chunk_start, chunk_length)
+            yield (i, offset, min(self.chunk_length, self.n_samples - offset))
+            offset += self.chunk_length
+
+    def read_chunk(self, chunk_idx, chunk_start, chunk_length):
+        return self._arr[chunk_start:chunk_start + chunk_length, :]
+
+    def __getitem__(self, idx):
+        return self._arr[idx]
+
+
+#-------------------------------------------------------------------------------------------------
 # Compressor
 #-------------------------------------------------------------------------------------------------
 
 def compress_lossy(
-        path_cbin=None, cmeta=None, rank=None, max_chunks=0,
+        path_cbin=None, cmeta=None, reader=None, rank=None, max_chunks=0,
         chunks_excerpts=None, downsampling_factor=None,
         preprocess=None, overwrite=False, dry_run=False,
         out_lossy=None, out_svd=None):
-    """Compress a .cbin file.
+    """Compress a .cbin file or an arbitrary signal array.
 
     Parameters
     ----------
@@ -441,6 +475,8 @@ def compress_lossy(
         Path to the compressed data binary file (typically ̀.cbin` file extension).
     cmeta : str or Path (default: None)
         Path to the compression header JSON file (typically `.ch` file extension).
+    reader : Reader instance
+        A mtscomp.Reader or ArrayReader object.
     rank : int (mandatory)
         Number of SVD components to keep in the compressed file.
     max_chunks : int (default: None)
@@ -474,7 +510,7 @@ def compress_lossy(
 
     # Check arguments.
     assert rank, "The rank must be set"
-    assert path_cbin, "The raw ephys data file must be specified"
+    assert path_cbin or reader, "The raw ephys data file must be specified"
     preprocess = preprocess or _preprocess_default
 
     chunks_excerpts = chunks_excerpts or CHUNKS_EXCERPTS
@@ -484,7 +520,9 @@ def compress_lossy(
     assert chunks_excerpts >= 2
 
     # Create a mtscomp Reader.
-    reader = decompress(path_cbin, cmeta=cmeta)
+    if path_cbin:
+        reader = decompress(path_cbin, cmeta=cmeta)
+    assert reader
     sr = int(reader.sample_rate)
     ns = reader.n_samples
     nc = reader.n_channels
@@ -499,13 +537,13 @@ def compress_lossy(
     assert rank <= nc, "The rank cannot exceed the number of channels"
 
     # Filenames.
-    if out_lossy is None:
+    if out_lossy is None and path_cbin:
         out_lossy = Path(path_cbin).with_suffix(FILE_EXTENSION_LOSSY)
-    assert out_lossy
+    assert out_lossy, "An output file path for the .lossy.npy file must be provided"
 
-    if out_svd is None:
+    if out_svd is None and path_cbin:
         out_svd = Path(path_cbin).with_suffix(FILE_EXTENSION_SVD)
-    assert out_svd
+    assert out_svd, "An output file path for the .svd.npz file must be provided"
 
     if dry_run:
         return out_lossy
