@@ -96,6 +96,7 @@ class SVD(Bunch):
             sample_rate=np.array([self.sample_rate]),
             downsample_factor=np.array([self.downsample_factor]),
         )
+        logger.info(f"SVD file saved to {path}")
 
     def __repr__(self):
         return f"<SVD n_channels={self.n_channels}, rank={self.rank}>"
@@ -551,6 +552,7 @@ def compress_lossy(
         raise IOError(f"File {out_lossy} already exists.")
     shape = (ns // downsampling_factor, rank)
     lossy = open_memmap(out_lossy, 'w+', dtype=DTYPE, shape=shape)
+    logger.info(f"Writing file {out_lossy}...")
 
     # Compute the SVD on an excerpt of the data.
     svd = excerpt_svd(reader, rank, kept_chunks=chunks_excerpts, preprocess=preprocess)
@@ -584,14 +586,18 @@ def compress_lossy(
         # NOTE: keep the ab scaling factors for uint8 conversion only for the first chunk
         if svd.ab is None:
             svd.ab = ab
+
+            # Save the SVD info to a npz file.
+            svd.save(out_svd)
+
         offset += l
 
     extra = shape[0] - offset
     if extra > 0:
         lossy[-extra:, :] = lossy[-extra - 1, :]
 
-    # Save the SVD info to a npz file.
-    svd.save(out_svd)
+    # # Save the SVD info to a npz file.
+    # svd.save(out_svd)
 
     return out_lossy
 
