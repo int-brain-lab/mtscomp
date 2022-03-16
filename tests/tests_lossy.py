@@ -7,21 +7,12 @@
 # Imports
 #------------------------------------------------------------------------------
 
-from contextlib import redirect_stdout
-import io
-from itertools import product
-import json
-import hashlib
 import logging
-import os
-import os.path as op
 from pathlib import Path
-import re
 
 import numpy as np
-from pytest import fixture, raises, mark
 
-from mtscomp import Reader, compress, decompress, add_default_handler, lossy as ml
+from mtscomp import compress, decompress, lossy as ml
 
 logger = logging.getLogger('mtscomp')
 # add_default_handler('DEBUG')
@@ -256,7 +247,7 @@ def test_lossy_array(tmp_path):
     # Generate an artificial binary file.
     arr = colored_sine()
     assert arr.shape == (n_samples, n_channels)
-    M = np.abs(arr).max()
+    # M = np.abs(arr).max()
 
     # mtscomp-like interface for a regular NumPy array.
     reader = ml.ArrayReader(arr, sample_rate=sample_rate)

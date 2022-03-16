@@ -8,20 +8,16 @@
 #-------------------------------------------------------------------------------------------------
 
 import argparse
-from functools import lru_cache
 from itertools import islice
 import logging
-import os
-import os.path as op
 from pathlib import Path
-import sys
 
 from tqdm import tqdm
 import numpy as np
 from numpy.linalg import inv
 from numpy.lib.format import open_memmap
 
-from .mtscomp import Bunch, decompress, Reader, add_default_handler
+from .mtscomp import Bunch, decompress, add_default_handler
 
 
 logger = logging.getLogger('mtscomp')
@@ -72,7 +68,7 @@ class SVD(Bunch):
         self.sample_rate = sample_rate  # the sampling rate
         self.downsample_factor = downsample_factor  # the downsample factor, an integer
         self.minmax = minmax  # the min and max of the signal across all channels
-        self.quantile = quantile  # the DEFAULT_QUANTILE and 1-DEFAULT_QUANTILE quantiles of the signal
+        self.quantile = quantile  # the q and 1-q quantiles of the signal
 
     def save(self, path):
         """Save this SVD object to a .npz file."""
@@ -272,7 +268,6 @@ def _get_excerpts(reader, kept_chunks=CHUNKS_EXCERPTS, preprocess=None):
     preprocess = preprocess or _preprocess_default
 
     arrs = []
-    n = 0
     n_chunks = reader.n_chunks
     assert reader.shape[0] > reader.shape[1]
     skip = max(1, n_chunks // kept_chunks)
@@ -446,7 +441,7 @@ class ArrayReader:
     def iter_chunks(self, last_chunk=None):
         offset = 0
         n = (last_chunk + 1) if last_chunk else self.n_chunks
-        for i in range(self.n_chunks):
+        for i in range(n):
             # (chunk_idx, chunk_start, chunk_length)
             yield (i, offset, min(self.chunk_length, self.n_samples - offset))
             offset += self.chunk_length

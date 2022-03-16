@@ -456,7 +456,8 @@ class Writer:
         ts = ' on %d CPUs.' % self.n_threads if self.n_threads > 1 else '.'
         logger.info("Starting compression" + ts)
         with open(out, 'wb') as fb:
-            for batch in tqdm(range(self.n_batches), desc='Compressing (lossless)', disable=self.quiet):
+            for batch in tqdm(
+                    range(self.n_batches), desc='Compressing (lossless)', disable=self.quiet):
                 first_chunk = self.batch_size * batch  # first included
                 last_chunk = min(self.batch_size * (batch + 1), self.n_chunks)  # last excluded
                 assert 0 <= first_chunk < last_chunk <= self.n_chunks
