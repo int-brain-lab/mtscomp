@@ -111,7 +111,7 @@ def _prepare_compare(lossless, lossy, t0, t1):
     lossless_img = ml._preprocess_default(lossless[i0:i1])
     lossy_img = lossy.get(t0, t1).T
 
-    mM = lossy._svd.minmax
+    mM = lossy._svd.quantile
     return lossless_img, lossy_img, mM
 
 
@@ -213,7 +213,7 @@ def test_lossy_local():
 
     hw = .1
     t = hw
-    err = show_compare(lossless, lossy, t - hw, t + hw, do_show=False)
+    err = show_compare(lossless, lossy, t - hw, t + hw, do_show=True)
     assert err < 1
 
 

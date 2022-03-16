@@ -32,12 +32,13 @@ logger.setLevel(logging.DEBUG)
 # Constants
 #-------------------------------------------------------------------------------------------------
 
-DOWNSAMPLE_FACTOR = 6
+DOWNSAMPLE_FACTOR = 4
 CHUNKS_EXCERPTS = 20
 
 FILE_EXTENSION_LOSSY = '.lossy.npy'
 FILE_EXTENSION_SVD = '.svd.npz'
-UINT8_MARGIN = .05
+DEFAULT_QUANTILE = .0025
+# UINT8_MARGIN = .05
 DTYPE = np.uint8
 MAX_UINT8 = 255
 
@@ -55,7 +56,7 @@ class SVD(Bunch):
     """
 
     def __init__(
-            self, U, sigma, rank=None, ab=None, minmax=None, q01=None,
+            self, U, sigma, rank=None, ab=None, minmax=None, quantile=None,
             sample_rate=None, downsample_factor=DOWNSAMPLE_FACTOR):
         super(SVD, self).__init__()
         self.U = U  # the "U" in the "U @ sigma @ V" SVD decomposition
@@ -71,7 +72,7 @@ class SVD(Bunch):
         self.sample_rate = sample_rate  # the sampling rate
         self.downsample_factor = downsample_factor  # the downsample factor, an integer
         self.minmax = minmax  # the min and max of the signal across all channels
-        self.q01 = q01  # the 0.01 and 0.99 quantiles of the signal (unused for now)
+        self.quantile = quantile  # the DEFAULT_QUANTILE and 1-DEFAULT_QUANTILE quantiles of the signal
 
     def save(self, path):
         """Save this SVD object to a .npz file."""
@@ -84,7 +85,7 @@ class SVD(Bunch):
         assert self.sample_rate > 0
         assert self.downsample_factor >= 1
         assert self.minmax is not None
-        assert self.q01 is not None
+        assert self.quantile is not None
 
         np.savez(
             path,
@@ -92,7 +93,7 @@ class SVD(Bunch):
             sigma=self.sigma,
             ab=self.ab,
             minmax=np.array(self.minmax),
-            q01=np.array(self.q01),
+            quantile=np.array(self.quantile),
 
             # NOTE: need to convert to regular arrays for np.savez
             rank=np.array([self.rank]),
@@ -115,7 +116,7 @@ def load_svd(path):
         sample_rate=d['sample_rate'][0],
         downsample_factor=int(d['downsample_factor'][0]),
         minmax=d['minmax'],
-        q01=d['q01'],
+        quantile=d['quantile'],
     )
     assert svd.n_channels >= 1
     return svd
@@ -172,16 +173,15 @@ def _svd(x):
     return SVD(U, sigma)
 
 
-def _uint8_coefs(x, margin=UINT8_MARGIN):
+def _uint8_coefs(x, q=DEFAULT_QUANTILE):
     """Compute the (a, b) rescaling coefficients to downsample a signal to uint8."""
-    # k = .01
-    # m, M = np.quantile(x, k), np.quantile(x, 1 - k)
-    m, M = x.min(), x.max()
+    m, M = np.quantile(x, q), np.quantile(x, 1 - q)
+    # m, M = x.min(), x.max()
     d = M - m
     assert d > 0
 
-    m -= d * margin
-    M += d * margin
+    # m -= d * margin
+    # M += d * margin
 
     a = MAX_UINT8 / d
     b = m
@@ -332,8 +332,9 @@ def excerpt_svd(reader, rank, kept_chunks=CHUNKS_EXCERPTS, preprocess=None):
     assert svd.U.shape[0] == reader.n_channels
 
     svd.minmax = (excerpts.min(), excerpts.max())
-    k = .01
-    svd.q01 = (np.quantile(excerpts.ravel(), k), np.quantile(excerpts.ravel(), 1 - k))
+    svd.quantile = (
+        np.quantile(excerpts.ravel(), DEFAULT_QUANTILE),
+        np.quantile(excerpts.ravel(), 1 - DEFAULT_QUANTILE))
 
     svd.sample_rate = reader.sample_rate
     svd.downsample_factor = DOWNSAMPLE_FACTOR
@@ -526,7 +527,7 @@ def compress_lossy(
     sr = int(reader.sample_rate)
     ns = reader.n_samples
     nc = reader.n_channels
-    n_chunks = reader.n_chunks if max_chunks == 0 else max_chunks
+    n_chunks = reader.n_chunks if not max_chunks else max_chunks
     if max_chunks:
         ns = max_chunks * sr  # NOTE: assume 1-second chunks
 
@@ -539,10 +540,12 @@ def compress_lossy(
     # Filenames.
     if out_lossy is None and path_cbin:
         out_lossy = Path(path_cbin).with_suffix(FILE_EXTENSION_LOSSY)
+    out_lossy = Path(out_lossy)
     assert out_lossy, "An output file path for the .lossy.npy file must be provided"
 
-    if out_svd is None and path_cbin:
-        out_svd = Path(path_cbin).with_suffix(FILE_EXTENSION_SVD)
+    if out_svd is None:
+        out_svd = Path(out_lossy).with_suffix('').with_suffix(FILE_EXTENSION_SVD)
+    out_svd = Path(out_svd)
     assert out_svd, "An output file path for the .svd.npz file must be provided"
 
     if dry_run:
@@ -657,7 +660,6 @@ class LossyReader:
         self.size_bytes = self._lossy.size * self._lossy.itemsize
         self.itemsize = 1
         self.dtype = DTYPE
-        self.minmax = self._svd.minmax  # used for cmap scaling visualization
 
         size_original = 2 * self.n_channels * self.n_samples
         self.compression = size_original / float(self.size_bytes)
@@ -712,7 +714,7 @@ class LossyReader:
         lossy = self._lossy[i0:i1]
         arr = self._decompress(lossy, rank=rank)
         if cast_to_uint8:
-            m, M = self.minmax
+            m, M = self._svd.quantile
             d = M - m
             assert d > 0
             a = MAX_UINT8 / d
