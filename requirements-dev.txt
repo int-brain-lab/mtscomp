@@ -1,5 +1,0 @@
-pytest
-flake8
-coverage
-coveralls
-pytest-cov

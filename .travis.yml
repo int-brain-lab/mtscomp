@@ -14,9 +14,7 @@ install:
   - conda update -q conda
   - conda info -a
   - conda install numpy
-  - pip install -r requirements.txt
-  - pip install -r requirements-dev.txt
-  - pip install -e .
+  - pip install -e .[dev]
 before_script:
 script:
   - make test

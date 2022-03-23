@@ -54,6 +54,19 @@ setup(
         ],
     },
     include_package_data=True,
+    install_requires=[
+        "numpy",
+        "tqdm",
+    ],
+    extras_require={
+        "dev": [
+            "pytest",
+            "flake8",
+            "coverage",
+            "coveralls",
+            "pytest-cov",
+        ],
+    },
     keywords='lossless,compresssion,electrophysiology,neuroscience',
     classifiers=[
         'Development Status :: 4 - Beta',
