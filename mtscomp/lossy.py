@@ -723,6 +723,12 @@ class LossyReader:
             arr, _ = to_uint8(arr, ab=(a, b))
         return arr
 
+    def t2s(self, t):
+        return np.round(t * self.sample_rate).astype(np.uint64)
+
+    def s2t(self, s):
+        return s / float(self.sample_rate)
+
     def __getitem__(self, idx):
         """Array-like interface."""
         lossy = self._lossy[idx]
