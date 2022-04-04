@@ -687,7 +687,7 @@ class LossyReader:
         lossy_float = from_uint8(lossy, self._svd.ab).T
         return _decompress_chunk(lossy_float, self._svd, rank=rank).T
 
-    def get(self, t0, t1, rank=None, cast_to_uint8=False):
+    def get(self, t0, t1, rank=None, cast_to_uint8=False, filter=None):
         """Return the reconstructed signal between two times (in seconds).
 
         Parameters
@@ -701,6 +701,8 @@ class LossyReader:
             If set, overrides the number of components to reuse for the reconstruction.
         cast_to_uint8 : bool (default: False)
             Whether the reconstructed signal should be downsampled to uint8 (for viz purposes).
+        filter : function
+            Filter to apply to the signal (before casting to uint8).
 
         Returns
         -------
@@ -714,6 +716,8 @@ class LossyReader:
         i1 = int(round(t1 * float(self.sample_rate) / ds))
         lossy = self._lossy[i0:i1]
         arr = self._decompress(lossy, rank=rank)
+        if filter:
+            arr = filter(arr)
         if cast_to_uint8:
             m, M = self._svd.quantile
             d = M - m
