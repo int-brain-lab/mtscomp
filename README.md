@@ -175,3 +175,16 @@ Performance on an Neuropixels dataset (30 kHz, 385 channels) and Intel 10-core i
 * Compression ratio: -63% (compressed files are nearly 3x smaller)
 * Compression time (20 threads): 88 MB/s, **4x faster than real time**
 * Decompression time (single-threaded at the moment): 22 MB/s, **3x faster than real time**
+
+## Development
+
+Install development version into the current python environment:
+
+```
+pip install -e .[dev]
+```
+
+Run tests:
+```
+pytest tests.py
+```
