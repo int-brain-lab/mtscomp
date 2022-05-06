@@ -24,7 +24,7 @@ with open(op.join(curdir, 'README.md')) as f:
 
 
 # Find version number from `__init__.py` without executing it.
-filename = op.join(curdir, 'mtscomp.py')
+filename = op.join(curdir, 'mtscomp', 'mtscomp.py')
 with open(filename, 'r') as f:
     version = re.search(r"__version__ = '([^']+)'", f.read()).group(1)
 
@@ -51,6 +51,7 @@ setup(
             'mtsdecomp=mtscomp:mtsdecomp',
             'mtsdesc=mtscomp:mtsdesc',
             'mtschop=mtscomp:mtschop',
+            'mtsloss=mtscomp.lossy:mtsloss',
         ],
     },
     include_package_data=True,

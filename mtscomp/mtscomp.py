@@ -40,8 +40,6 @@ lock = Lock()  # use for concurrent read on the same file with multithreaded dec
 __version__ = '1.0.2'
 FORMAT_VERSION = '1.0'
 
-__all__ = ('load_raw_data', 'Writer', 'Reader', 'compress', 'decompress')
-
 
 DEFAULT_CONFIG = list(dict(
     algorithm='zlib',  # only algorithm supported currently
@@ -430,9 +428,9 @@ class Writer:
         ----------
 
         out : str or Path
-            Path to the compressed data binary file (typically ̀.cbin` file extension).
+            Path to the compressed data binary file (typically ̀`.cbin` file extension).
         outmeta : str or Path
-            Path to the compression header JSON file (typicall `.ch` file extension).
+            Path to the compression header JSON file (typically `.ch` file extension).
 
         Returns
         -------
@@ -458,7 +456,8 @@ class Writer:
         ts = ' on %d CPUs.' % self.n_threads if self.n_threads > 1 else '.'
         logger.info("Starting compression" + ts)
         with open(out, 'wb') as fb:
-            for batch in tqdm(range(self.n_batches), desc='Compressing', disable=self.quiet):
+            for batch in tqdm(
+                    range(self.n_batches), desc='Compressing (lossless)', disable=self.quiet):
                 first_chunk = self.batch_size * batch  # first included
                 last_chunk = min(self.batch_size * (batch + 1), self.n_chunks)  # last excluded
                 assert 0 <= first_chunk < last_chunk <= self.n_chunks
