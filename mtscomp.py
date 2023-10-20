@@ -840,7 +840,7 @@ class Reader:
                 return self[item[0]][item[1]]
             elif len(item) == 2:
                 return self[item[0]][:, item[1]]
-        elif isinstance(item, int):
+        elif isinstance(item, (int, np.integer)):
             if item < 0:
                 # Deal with negative indices.
                 k = -int(np.floor(item / self.n_samples))
@@ -852,7 +852,7 @@ class Reader:
             out = self[item:item + 1]
             return out[0]
         elif isinstance(item, (list, np.ndarray)):  # pragma: no cover
-            raise NotImplementedError("Indexing with multiple values is currently unsupported.")
+            return np.array([self[idx] for idx in item])
         return fallback  # pragma: no cover
 
     def __del__(self):
