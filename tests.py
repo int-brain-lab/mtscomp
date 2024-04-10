@@ -273,6 +273,10 @@ def test_reader_indexing_1(path, arr):
     items.extend([0, 1, N - 2, N - 1])  # N, N + 1, -1, -2])
     items.extend(np.random.randint(low=-N, high=N, size=100).tolist())
 
+    # array/list indexing
+    items.append(np.arange(0, N, 100).tolist())
+    items.append(np.arange(0, N, 100))
+
     # For every item, check the decompression.
     for s in items:
         if isinstance(s, slice) and s.step is not None and s.step <= 0:
