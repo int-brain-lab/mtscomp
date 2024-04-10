@@ -281,6 +281,10 @@ def test_reader_indexing_1(path, arr):
             for t3 in inttypes:
                 items.append(slice(t1(5), t2(9), t3(2))) # Slices with steps
 
+    # array/list indexing
+    items.append(np.arange(0, N, 100).tolist())
+    items.append(np.arange(0, N, 100))
+
     # For every item, check the decompression.
     for s in items:
         if isinstance(s, slice) and s.step is not None and s.step <= 0:
