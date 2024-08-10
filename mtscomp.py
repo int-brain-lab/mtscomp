@@ -656,7 +656,7 @@ class Reader:
             i += self.n_samples
         i = _clip(i, 0, self.n_samples)
         assert 0 <= i <= self.n_samples
-        return i
+        return int(i)
 
     def _chunks_for_interval(self, i0, i1):
         """Find the first and last chunks to be loaded in order to get the data between
