@@ -53,7 +53,7 @@ DEFAULT_CONFIG = list(dict(
     comp_level=-1,  # zlib compression level
     do_spatial_diff=False,  # benchmarks seem to show no compression performance benefits
     do_time_diff=True,
-    n_threads=mp.cpu_count(),
+    n_threads=min(mp.cpu_count() - 1, 4),  # this is I/O bound, 4 threads max is plenty on large CPUs
 ).items())  # convert to a list to ensure this dictionary is read-only
 
 CHECK_ATOL = 1e-16  # tolerance for floating point array comparison check
