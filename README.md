@@ -34,7 +34,7 @@ As a consistency check, the compressed file is by default automatically and tran
 
 ## Dependencies
 
-* Python 3.9+
+* Python 3.10+
 * NumPy
 * tqdm [for the progress bar]
 
