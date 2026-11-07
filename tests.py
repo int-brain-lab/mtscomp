@@ -281,6 +281,20 @@ def test_reader_indexing_1(path, arr):
             for t3 in inttypes:
                 items.append(slice(t1(5), t2(9), t3(2))) # Slices with steps
 
+    # array/list indexing
+    items.append(np.arange(0, N, 100).tolist())
+    items.append(np.arange(0, N, 100))
+    items.append(np.random.randint(low=-N, high=N, size=20))  # unsorted, negative, duplicates
+    items.append([])
+    items.append((np.arange(0, N, 100), slice(1, 3)))
+
+    # Boolean masks
+    mask = np.random.rand(N) < .05
+    items.append(mask)
+    items.append(mask.tolist())
+    items.append(np.zeros(N, dtype=bool))
+    items.append((mask, 1))
+
     # For every item, check the decompression.
     for s in items:
         if isinstance(s, slice) and s.step is not None and s.step <= 0:
@@ -297,6 +311,13 @@ def test_reader_indexing_1(path, arr):
         assert sliced.shape == expected.shape
         assert np.array_equal(sliced, expected)
         assert np.allclose(_from_int16(sliced, M), arr[s], atol=1e-4)
+
+    # A boolean mask must match the number of samples, as in NumPy.
+    for bad_mask in (np.ones(N - 1, dtype=bool), np.ones((N, 2), dtype=bool)):
+        with raises(IndexError):
+            arr16[bad_mask]
+        with raises(IndexError):
+            unc[bad_mask]
 
 
 def test_reader_indexing_2(path, arr):
