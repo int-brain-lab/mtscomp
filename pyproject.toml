@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mtscomp"
+dynamic = ["version"]
+description = "Lossless compression for electrophysiology time-series"
+readme = "README.md"
+license = { file = "LICENSE.md" }
+authors = [{ name = "Cyrille Rossant (International Brain Laboratory)", email = "cyrille.rossant@gmail.com" }]
+requires-python = ">=3.9"
+dependencies = ["numpy", "tqdm"]
+keywords = ["lossless", "compression", "electrophysiology", "neuroscience"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+]
+
+[project.urls]
+Homepage = "https://github.com/int-brain-lab/mtscomp"
+
+[project.scripts]
+mtscomp = "mtscomp:mtscomp"
+mtsdecomp = "mtscomp:mtsdecomp"
+mtsdesc = "mtscomp:mtsdesc"
+mtschop = "mtscomp:mtschop"
+
+[dependency-groups]
+dev = ["pytest", "pytest-cov", "ruff"]
+
+[tool.setuptools]
+py-modules = ["mtscomp"]
+
+[tool.setuptools.dynamic]
+version = { attr = "mtscomp.__version__" }
+
+[tool.pytest.ini_options]
+norecursedirs = ["experimental", "_*"]
+filterwarnings = ["default", "ignore::DeprecationWarning:.*", "ignore:numpy.ufunc"]
+
+[tool.coverage.run]
+branch = false
+source = ["mtscomp"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "pass",
+    "continue",
+    "return$",
+    '^"""',
+]
+show_missing = true
+
+[tool.ruff]
+line-length = 99
+include = ["mtscomp.py", "tests.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E265", "E731", "E741"]
