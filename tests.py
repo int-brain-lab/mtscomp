@@ -13,7 +13,6 @@ from itertools import product
 import json
 import hashlib
 import logging
-import os
 import os.path as op
 from pathlib import Path
 import re
@@ -382,10 +381,13 @@ def test_check_fail(path, arr):
         # the file.
         with open(str(path), 'r+b') as f:
             f.seek(f_size // 2)
-            # Also, it's better to change multiple bytes at the same time to be sure that
-            # the underlying number (e.g. float64) is fully modified.
-            f.write(os.urandom(8))
-        assert not np.allclose(np.fromfile(str(path), dtype=arr.dtype), arr.ravel())
+            # Flip all the bits of 8 bytes so the underlying numbers (e.g. float64) are
+            # guaranteed to change. Random bytes are not enough: they may decode to tiny values
+            # that compare as close to the original zeros.
+            flipped = bytes(b ^ 0xFF for b in f.read(8))
+            f.seek(f_size // 2)
+            f.write(flipped)
+        assert not np.array_equal(np.fromfile(str(path), dtype=arr.dtype), arr.ravel())
         # The file size should be the same, although one byte has been changed.
         assert op.getsize(path) == f_size
         # Finally, we open it again before the check.
