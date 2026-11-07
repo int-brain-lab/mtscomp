@@ -840,7 +840,7 @@ class Reader:
                 return self[item[0]][item[1]]
             elif len(item) == 2:
                 return self[item[0]][:, item[1]]
-        elif isinstance(item, int):
+        elif isinstance(item, (int, np.integer)):
             if item < 0:
                 # Deal with negative indices.
                 k = -int(np.floor(item / self.n_samples))
@@ -851,8 +851,22 @@ class Reader:
                     "index %d is out of bounds for axis 0 with size %d" % (item, self.n_samples))
             out = self[item:item + 1]
             return out[0]
-        elif isinstance(item, (list, np.ndarray)):  # pragma: no cover
-            raise NotImplementedError("Indexing with multiple values is currently unsupported.")
+        elif isinstance(item, (list, np.ndarray)):
+            item = np.asarray(item)
+            if item.dtype == bool:
+                # Boolean mask along the time axis, as in NumPy.
+                if item.shape != (self.n_samples,):
+                    raise IndexError(
+                        f"boolean index of shape {item.shape} does not match the "
+                        f"first dimension of size {self.n_samples}")
+                item = np.flatnonzero(item)
+            if item.ndim == 0:
+                return self[int(item)]
+            if item.size == 0:
+                # Keep the shape and dtype that NumPy returns for an empty index.
+                return np.zeros((*item.shape, self.n_channels), dtype=self.dtype)
+            # Integer array indexing: one sample (or sub-array) at a time.
+            return np.array([self[idx] for idx in item])
         return fallback  # pragma: no cover
 
     def __del__(self):
