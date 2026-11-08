@@ -12,6 +12,7 @@ import os.path as op
 import re
 
 from setuptools import setup, find_packages
+from typing import List
 
 
 #------------------------------------------------------------------------------
@@ -27,6 +28,18 @@ with open(op.join(curdir, 'README.md')) as f:
 filename = op.join(curdir, 'mtscomp.py')
 with open(filename, 'r') as f:
     version = re.search(r"__version__ = '([^']+)'", f.read()).group(1)
+
+
+def get_requirements(extra: str = "") -> List[str]:
+    requirements_file = f"requirements-{extra}.txt" if extra else "requirements.txt"
+    requires = []
+    with open(requirements_file) as f:
+        for dep in f.readlines():
+            if dep.startswith("git+"):
+                print(f"Note! Dependency {dep} from file {requirements_file} was omitted.")
+                continue
+            requires.append(dep.strip())
+    return requires
 
 
 setup(
@@ -54,6 +67,10 @@ setup(
         ],
     },
     include_package_data=True,
+    install_requires=get_requirements(),
+    extras_require={
+        "dev": get_requirements("dev"),
+    },
     keywords='lossless,compresssion,electrophysiology,neuroscience',
     classifiers=[
         'Development Status :: 4 - Beta',
