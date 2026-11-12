@@ -12,13 +12,13 @@ clean-pyc:
 clean: clean-build clean-pyc
 
 lint:
-	flake8
+	uvx ruff check
 
 test: lint
-	py.test -vv --cov-report term-missing --cov=mtscomp tests.py
+	uv run pytest -vv --cov-report term-missing --cov=mtscomp tests.py
 
 build:
-	python setup.py sdist --formats=zip
+	uv build
 
-upload:
-	python setup.py sdist --formats=zip upload
+upload: build
+	uv publish

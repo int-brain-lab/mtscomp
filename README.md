@@ -1,7 +1,6 @@
 # Multichannel time series lossless compression in Python
 
-[![Build Status](https://travis-ci.org/int-brain-lab/mtscomp.svg?branch=master)](https://travis-ci.org/int-brain-lab/mtscomp)
-[![Coverage Status](https://codecov.io/gh/int-brain-lab/mtscomp/branch/master/graph/badge.svg)](https://codecov.io/gh/int-brain-lab/mtscomp)
+[![Tests](https://github.com/int-brain-lab/mtscomp/actions/workflows/tests.yml/badge.svg)](https://github.com/int-brain-lab/mtscomp/actions/workflows/tests.yml)
 
 This library implements a simple lossless compression scheme adapted to time-dependent high-frequency, high-dimensional signals. It is being developed within the [International Brain Laboratory](https://www.internationalbrainlab.com/) with the aim of being the compression library used for all large-scale electrophysiological recordings based on Neuropixels. The signals are typically recorded at 30 kHz and 10 bit depth, and contain several hundreds of channels.
 
@@ -35,16 +34,16 @@ As a consistency check, the compressed file is by default automatically and tran
 
 ## Dependencies
 
-* Python 3.7+
+* Python 3.10+
 * NumPy
 * tqdm [for the progress bar]
 
-For development only:
+For development, install the `dev` dependency group and run the tests with:
 
-* flake8
-* pytest
-* pytest-cov
-* coverage
+```
+uv sync --group dev
+uv run pytest tests.py
+```
 
 
 ## Installation
